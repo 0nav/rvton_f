@@ -99,17 +99,31 @@ class VTONFrontend:
     def _get_api_url(self) -> str:
         """Get API URL with proper fallback handling."""
         try:
-            # Try secrets first (production)
-            api_url = st.secrets.get("API_BASE_URL")
+            # Try secrets first (production) - support both root level and [default] section
+            if hasattr(st.secrets, 'API_BASE_URL'):
+                api_url = st.secrets.API_BASE_URL
+            elif hasattr(st.secrets, 'default') and hasattr(st.secrets.default, 'API_BASE_URL'):
+                api_url = st.secrets.default.API_BASE_URL
+            else:
+                api_url = None
+                
             if api_url:
-                return api_url.rstrip('/')
+                return str(api_url).rstrip('/')
         except Exception as e:
             logger.warning(f"Could not load from secrets: {e}")
         
-        # Fallback to environment or default
+        # Fallback to environment
         import os
-        api_url = os.getenv("API_BASE_URL", "http://localhost:8000")
-        return api_url.rstrip('/')
+        api_url = os.getenv("API_BASE_URL")
+        if api_url:
+            return api_url.rstrip('/')
+            
+        # No fallback URL - force proper configuration
+        logger.error("No API_BASE_URL found in secrets or environment variables!")
+        raise ValueError(
+            "API_BASE_URL must be configured in Streamlit secrets or environment variables. "
+            "Please set up your API URL properly before using the application."
+        )
     
     def _initialize_session_state(self):
         """Initialize all session state variables with proper defaults."""
@@ -510,8 +524,9 @@ class VTONFrontend:
         else:
             st.info(f"{color} Checking API Status...")
         
-        # Refresh button
-        if st.button("🔄 Refresh API Status", key="refresh_api"):
+        # Refresh button with unique key
+        refresh_key = f"refresh_api_{st.session_state.get('session_id', 'default')}"
+        if st.button("🔄 Refresh API Status", key=refresh_key):
             self._validate_api_connection()
             st.rerun()
     
@@ -1881,9 +1896,6 @@ def main():
         st.write("• Check your internet connection") 
         st.write("• Verify the API is running")
         st.write("• Contact support if the issue persists")
-
-if __name__ == "__main__":
-    main()
 
 # For Streamlit Cloud deployment, always run main
 main()
