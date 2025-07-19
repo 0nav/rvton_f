@@ -448,7 +448,7 @@ class VTONFrontend:
                         try:
                             # Display image preview
                             image = Image.open(uploaded_file)
-                            st.image(image, caption=f"✅ {uploaded_file.name}", use_column_width=True)
+                            st.image(image, caption=f"✅ {uploaded_file.name}", use_container_width=True)
                             
                             # Store processed image data
                             st.session_state.user_image = processed_data
@@ -1109,7 +1109,7 @@ class VTONFrontend:
                 
                 with rec_col1:
                     try:
-                        st.image(rec['image'], caption=f"{rec['type'].title()}", use_column_width=True)
+                        st.image(rec['image'], caption=f"{rec['type'].title()}", use_container_width=True)
                     except Exception as e:
                         st.error(f"Could not load image: {e}")
                 
@@ -1158,12 +1158,12 @@ class VTONFrontend:
         
         # Display the try-on result
         if vton_result.get('final_image_url'):
-            st.image(vton_result['final_image_url'], caption="Your Virtual Try-On Result", use_column_width=True)
+            st.image(vton_result['final_image_url'], caption="Your Virtual Try-On Result", use_container_width=True)
         elif vton_result.get('final_image'):
             # Decode base64 image
             try:
                 image_data = base64.b64decode(vton_result['final_image'])
-                st.image(image_data, caption="Your Virtual Try-On Result", use_column_width=True)
+                st.image(image_data, caption="Your Virtual Try-On Result", use_container_width=True)
             except Exception as e:
                 st.error(f"Could not display try-on image: {e}")
         else:
