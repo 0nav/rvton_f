@@ -131,16 +131,17 @@ class VTONFrontend:
     def _validate_api_connection(self):
         """Validate API connection and update status."""
         try:
+            logger.info(f"Attempting to connect to API at: {self.api_base_url}")
             response = requests.get(f"{self.api_base_url}/health", timeout=10)
             if response.status_code == 200:
                 st.session_state.api_status = 'connected'
-                logger.info("API connection validated successfully")
+                logger.info(f"API connection validated successfully at {self.api_base_url}")
             else:
                 st.session_state.api_status = 'error'
-                logger.error(f"API health check failed: {response.status_code}")
+                logger.error(f"API health check failed: {response.status_code} at {self.api_base_url}")
         except Exception as e:
             st.session_state.api_status = 'offline'
-            logger.error(f"API connection failed: {e}")
+            logger.error(f"API connection failed to {self.api_base_url}: {e}")
     
     def _validate_image(self, uploaded_file) -> tuple:
         """Comprehensive image validation with detailed feedback."""
@@ -1865,7 +1866,7 @@ def main():
         app = VTONFrontend()
         
         # Render the main interface
-        app.render_main_interface()
+        app.run()
         
     except Exception as e:
         st.error("🚨 **Application Error**")
