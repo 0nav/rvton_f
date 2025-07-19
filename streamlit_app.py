@@ -1856,3 +1856,33 @@ class VTONFrontend:
         except Exception as e:
             logger.error(f"Session data export failed: {e}")
             return {"error": str(e)}
+
+# Main Application Execution
+def main():
+    """Main application entry point."""
+    try:
+        # Initialize the VTON Frontend
+        app = VTONFrontend()
+        
+        # Render the main interface
+        app.render_main_interface()
+        
+    except Exception as e:
+        st.error("🚨 **Application Error**")
+        st.error(f"Failed to initialize the application: {str(e)}")
+        
+        with st.expander("🔍 Error Details"):
+            import traceback
+            st.code(traceback.format_exc())
+        
+        st.info("💡 **Troubleshooting Tips:**")
+        st.write("• Refresh the page")
+        st.write("• Check your internet connection") 
+        st.write("• Verify the API is running")
+        st.write("• Contact support if the issue persists")
+
+if __name__ == "__main__":
+    main()
+
+# For Streamlit Cloud deployment, always run main
+main()
