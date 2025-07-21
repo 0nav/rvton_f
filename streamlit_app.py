@@ -149,8 +149,16 @@ class VTONFrontend:
         """Initialize the application with configuration and session state"""
         # API Configuration from Streamlit secrets
         try:
-            self.api_base_url = st.secrets["API_BASE_URL"]
-            self.debug_mode = st.secrets.get("DEBUG", "false").lower() == "true"
+            # Try to access from default section first, then direct access as fallback
+            if "default" in st.secrets:
+                self.api_base_url = st.secrets["default"]["API_BASE_URL"]
+                self.debug_mode = st.secrets["default"].get("DEBUG", "false").lower() == "true"
+            else:
+                # Try direct access as fallback
+                self.api_base_url = st.secrets["API_BASE_URL"]
+                self.debug_mode = st.secrets.get("DEBUG", "false").lower() == "true"
+                
+            logger.info(f"Successfully loaded API configuration: {self.api_base_url}")
         except Exception as e:
             # Set to None if secrets not available
             self.api_base_url = None
@@ -673,7 +681,7 @@ class VTONFrontend:
                 url,
                 json=data,
                 headers={"Content-Type": "application/json"},
-                timeout=540  # 9 minutes timeout
+                timeout=440  
             )
             
             # Clear the progress indicator
