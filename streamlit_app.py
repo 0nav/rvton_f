@@ -187,6 +187,9 @@ class VTONFrontend:
     
     def run(self):
         """Run the main application"""
+        # Always reset selected items on initialization
+        st.session_state.selected_items = []
+        
         # Enhanced header with logo and title
         col1, col2 = st.columns([1, 5])
         with col1:
@@ -233,14 +236,17 @@ class VTONFrontend:
                 if st.button("← Back", type="secondary", key="back_to_upload"):
                     st.session_state.current_step = "upload"
                     st.session_state.processing = False
+                    # Clear selections when going back
+                    st.session_state.selected_items = []
                     st.rerun()
             
             with col2:
                 # Only enable button if there are selected items and they're compatible
-                disable_tryon = not st.session_state.selected_items or (
-                    st.session_state.selected_items and 
-                    not self._check_clothing_compatibility(st.session_state.selected_items)["valid"]
-                ) or st.session_state.processing
+                disable_tryon = (
+                    not st.session_state.selected_items or 
+                    not self._check_clothing_compatibility(st.session_state.selected_items)["valid"] or
+                    st.session_state.processing
+                )
                 
                 def on_tryon_click():
                     st.session_state.button_clicked = True
@@ -265,6 +271,8 @@ class VTONFrontend:
             # Back button
             if st.button("← Back to Selection", type="secondary", key="back_to_selection"):
                 st.session_state.current_step = "select"
+                # Ensure no items are selected when returning to selection screen
+                st.session_state.selected_items = []
                 # Don't clear vton_results so user can navigate back and forth
                 st.rerun()
     
@@ -509,6 +517,9 @@ class VTONFrontend:
             st.session_state.processing = False
             return
         
+        # Always clear selected items when getting recommendations
+        st.session_state.selected_items = []
+        
         try:
             # Create a container for the loading animation
             progress_container = st.empty()
@@ -561,6 +572,9 @@ class VTONFrontend:
     
     def _render_recommendation_selection(self):
         """Render the recommendations and let user select items to try on"""
+        # Explicitly clear all selections when entering this page
+        st.session_state.selected_items = []
+        
         st.subheader("Your Personalized Recommendations")
         
         # Display user analysis summary
@@ -612,29 +626,10 @@ class VTONFrontend:
         # Create a separator between clothing categories
         st.markdown("<hr style='margin: 1rem 0;'>", unsafe_allow_html=True)
         
-        # Display all recommendations in a grid
-        num_items = len(all_recommendations)
-        
-        # Initialize selected_items if empty and there are recommendations
-        if not st.session_state.selected_items and num_items > 0:
-            # Auto-select up to 2 compatible items for a quick start
-            tops = [i for i, r in enumerate(all_recommendations) if r["type"] in clothing_types["tops"]]
-            bottoms = [i for i, r in enumerate(all_recommendations) if r["type"] in clothing_types["bottoms"]]
-            dresses = [i for i, r in enumerate(all_recommendations) if r["type"] in clothing_types["dresses"]]
-            
-            # Try to get a balanced outfit selection
-            if dresses:
-                # If we have a dress, select that
-                st.session_state.selected_items = [dresses[0]]
-            elif tops and bottoms:
-                # Select a top and bottom combination
-                st.session_state.selected_items = [tops[0], bottoms[0]]
-            elif tops:
-                # Just select a top if that's all we have
-                st.session_state.selected_items = [tops[0]]
-            elif bottoms:
-                # Just select bottoms if that's all we have
-                st.session_state.selected_items = [bottoms[0]]
+        # IMPORTANT: Always ensure selected_items is an empty list when viewing recommendations
+        # This prevents any automatic selection of items
+        if st.session_state.current_step == "select" and not st.session_state.selected_items:
+            st.session_state.selected_items = []  # Force empty list for recommendations view
         
         # Show each clothing category that has items
         for category_name, category_types in clothing_types.items():
@@ -677,12 +672,16 @@ class VTONFrontend:
                         # Selection and Buy buttons in same row
                         col1, col2 = st.columns(2)
                         with col1:
-                            # Checkbox for selection with key based on item index
-                            is_selected = item_idx in st.session_state.selected_items
-                            if st.checkbox("Select", value=is_selected, key=f"select_{item_idx}"):
+                            # Generate a unique key to prevent any session state issues
+                            checkbox_key = f"select_{item_idx}_{category_name}_{time.time()}"
+                            
+                            # Always start with unchecked, never use session state for checkbox value
+                            if st.checkbox("Select", value=False, key=checkbox_key):
+                                # Only add to selected_items if checkbox is checked right now
                                 if item_idx not in st.session_state.selected_items:
                                     st.session_state.selected_items.append(item_idx)
                             else:
+                                # Always remove from selected_items if checkbox is not checked
                                 if item_idx in st.session_state.selected_items:
                                     st.session_state.selected_items.remove(item_idx)
                         
@@ -861,42 +860,36 @@ class VTONFrontend:
     def _check_clothing_compatibility(self, selected_items):
         """Check if the selected clothing items are compatible for VTON processing
         
-        This implements client-side validation similar to what the backend does,
-        to prevent sending invalid combinations that would fail."""
-        clothing_types = [st.session_state.recommendations[i]["type"] for i in selected_items]
+        This is a minimal frontend check - all real validation is done in the backend."""
+        # If there are no items, it's not valid for try-on
+        if not selected_items:
+            return {
+                "valid": False,
+                "conflicts": ["Please select at least one item"],
+                "warnings": []
+            }
         
-        # Check for direct conflicts based on common rules
-        conflicts = []
-        warnings = []
+        # For a single item, it's always valid
+        if len(selected_items) == 1:
+            return {
+                "valid": True,
+                "conflicts": [],
+                "warnings": []
+            }
         
-        # Check for multiple items of same type or category
-        top_types = ["shirt", "t_shirt", "blouse", "top", "tank_top", "crop_top"]
-        bottom_types = ["pants", "jeans", "shorts", "skirt", "leggings"]
-        dress_types = ["dress", "maxi_dress", "mini_dress", "cocktail_dress"]
+        # Only very basic checks - let backend handle real validation
+        if len(selected_items) > 3:
+            return {
+                "valid": False,
+                "conflicts": ["Please select at most 3 items"],
+                "warnings": []
+            }
         
-        # Count categories
-        tops = [t for t in clothing_types if t in top_types]
-        bottoms = [t for t in clothing_types if t in bottom_types]
-        dresses = [t for t in clothing_types if t in dress_types]
-        
-        # Check for conflicts
-        if len(dresses) > 0 and (len(tops) > 0 or len(bottoms) > 0):
-            conflicts.append("Cannot combine dresses with tops or bottoms")
-        
-        if len(dresses) > 1:
-            conflicts.append("Cannot use multiple dresses")
-        
-        if len(tops) > 1:
-            conflicts.append("Cannot use multiple tops (shirts, t-shirts, etc.)")
-        
-        if len(bottoms) > 1 and not ("leggings" in bottoms and len(bottoms) == 2):
-            warnings.append("Using multiple bottom garments may cause issues")
-        
-        # Return validation results
+        # Let the backend handle all other validation
         return {
-            "valid": len(conflicts) == 0,
-            "conflicts": conflicts,
-            "warnings": warnings
+            "valid": True,
+            "conflicts": [],
+            "warnings": []
         }
     
     def _api_call(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
