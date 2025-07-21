@@ -1,297 +1,95 @@
 """
-VTON + Recommendation Engine - Minimal Streamlit Frontend
-A clean, focused application for virtual try-on with AI recommendations.
+Simple VTON Frontend - One Page, Direct Results
+Upload photo, set preferences, get recommendations + try-on results instantly.
 """
 
 import streamlit as st
 import requests
 import base64
-import time
 from PIL import Image
 import io
 import logging
-from typing import Dict, Any
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configure page
 st.set_page_config(
     page_title="AI Fashion Studio",
-    page_icon="�",
+    page_icon="👗",
     layout="wide"
 )
 
-# Custom CSS for styling
+# Custom CSS
 st.markdown("""
 <style>
     .main-header {
         font-size: 2.5rem;
         text-align: center;
-        margin-bottom: 1.5rem;
+        margin-bottom: 2rem;
         background: linear-gradient(135deg, #6a11cb 0%, #2575fc 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        padding: 1rem 0;
     }
-    .recommendation-card {
+    .result-card {
         border: 1px solid #f0f0f0;
         border-radius: 10px;
         padding: 1rem;
-        margin-bottom: 1rem;
+        margin: 1rem 0;
         background-color: #ffffff;
         box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-        transition: transform 0.3s ease, box-shadow 0.3s ease;
     }
-    .recommendation-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 8px 16px rgba(0,0,0,0.15);
-    }
-    .buy-button {
-        background-color: #4CAF50;
-        color: white;
-        padding: 8px 16px;
-        text-align: center;
-        text-decoration: none;
-        display: inline-block;
-        border-radius: 4px;
-        margin-top: 10px;
-        transition: background-color 0.3s ease;
-        cursor: pointer;
-        font-weight: bold;
-        width: 100%;
-        border: none;
-    }
-    .buy-button:hover {
-        background-color: #45a049;
-    }
-    .sub-header {
-        font-size: 1.75rem;
-        margin-top: 1.5rem;
-        margin-bottom: 1rem;
-        color: #333;
-    }
-    .error-message {
-        background: linear-gradient(135deg, #fd79a8 0%, #e84393 100%);
-        color: white;
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-    }
-    .success-message {
-        background: linear-gradient(135deg, #00b894 0%, #00a085 100%);
-        color: white;
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-    }
-    .metric-card {
-        background: linear-gradient(135deg, #74b9ff 0%, #0984e3 100%);
-        padding: 1rem;
-        border-radius: 10px;
-        color: white;
-        text-align: center;
-    }
-    .color-swatch {
-        display: inline-block;
-        width: 25px;
-        height: 25px;
-        margin-right: 5px;
-        border-radius: 50%;
-        border: 1px solid #ddd;
-    }
-    .stProgress > div > div > div > div {
-        background-color: #4CAF50;
-    }
-    /* Additional styling for better UI */
     .stButton>button {
         border-radius: 20px;
         font-weight: 600;
-        transition: all 0.3s ease;
-    }
-    .stButton>button:hover {
-        transform: scale(1.05);
-    }
-    .stCheckbox > label {
-        font-weight: 600;
-    }
-    /* Loading animation enhancements */
-    .stSpinner {
-        display: flex;
-        justify-content: center;
-        align-items: center;
-    }
-    /* Section dividers */
-    hr {
-        border: 0;
-        height: 1px;
-        background-image: linear-gradient(to right, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0));
-        margin: 2rem 0;
-    }
-    /* Image container styling */
-    img {
-        border-radius: 8px;
-        transition: transform 0.3s ease;
-    }
-    img:hover {
-        transform: scale(1.02);
+        width: 100%;
+        height: 3rem;
+        font-size: 1.2rem;
     }
 </style>
 """, unsafe_allow_html=True)
 
-class VTONFrontend:
-    """VTON and Recommendation Frontend Application"""
-    
+class SimpleVTONApp:
     def __init__(self):
-        """Initialize the application with configuration and session state"""
-        # Simple API Configuration
         self.api_base_url = st.secrets.get("API_BASE_URL", "http://localhost:8000")
         
-        # Ensure URL has proper protocol
+        # Ensure URL format
         if not self.api_base_url.startswith(("http://", "https://")):
-            self.api_base_url = f"https://{self.api_base_url}"
-        
-        # Remove trailing slash
+            self.api_base_url = f"http://{self.api_base_url}"
         if self.api_base_url.endswith("/"):
             self.api_base_url = self.api_base_url[:-1]
-        
-        # Simple API status check
-        try:
-            response = requests.get(f"{self.api_base_url}/health", timeout=5)
-            if response.status_code == 200:
-                st.sidebar.success(f"✅ API Connected: {self.api_base_url}")
-            else:
-                st.sidebar.warning(f"⚠️ API Issue: {self.api_base_url}")
-        except Exception:
-            st.sidebar.error(f"❌ API Offline: {self.api_base_url}")
         
         # Initialize session state
         if "user_image" not in st.session_state:
             st.session_state.user_image = None
-        if "recommendations" not in st.session_state:
-            st.session_state.recommendations = None
-        if "vton_results" not in st.session_state:
-            st.session_state.vton_results = None
         if "processing" not in st.session_state:
             st.session_state.processing = False
-        if "selected_items" not in st.session_state:
-            st.session_state.selected_items = []
-        if "current_step" not in st.session_state:
-            st.session_state.current_step = "upload"
-        if "button_clicked" not in st.session_state:
-            st.session_state.button_clicked = False
+        if "results" not in st.session_state:
+            st.session_state.results = None
     
     def run(self):
-        """Run the main application"""
-        # Always reset selected items on initialization
-        st.session_state.selected_items = []
+        # Header
+        st.markdown("<h1 class='main-header'>👗 AI Fashion Studio</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; font-size: 1.2rem; color: #666;'>Upload your photo, set preferences, get instant recommendations + try-on results!</p>", unsafe_allow_html=True)
         
-        # Enhanced header with logo and title
-        col1, col2 = st.columns([1, 5])
-        with col1:
-            st.markdown("""
-            <div style="text-align: center; margin-top: 10px;">
-                <span style="font-size: 3rem; color: #4CAF50;">👗</span>
-            </div>
-            """, unsafe_allow_html=True)
-            
-        with col2:
-            st.markdown("<h1 class='main-header'>AI Fashion Studio</h1>", unsafe_allow_html=True)
-        
-        # Show different content based on current step
-        if st.session_state.current_step == "upload":
-            self._render_upload_section()
-            self._render_preferences_section()
-            
-            # Process button to get recommendations
-            button_disabled = st.session_state.processing or st.session_state.user_image is None
-            
-            def on_recommend_click():
-                st.session_state.button_clicked = True
-                st.session_state.processing = True
-            
-            st.button(
-                "Get Recommendations", 
-                type="primary", 
-                disabled=button_disabled,
-                on_click=on_recommend_click
-            )
-            
-            # Process recommendations when button is clicked
-            if st.session_state.button_clicked and st.session_state.processing:
-                self._get_recommendations()
-                st.session_state.button_clicked = False  # Reset for next time
-                
-        elif st.session_state.current_step == "select":
-            # Display recommendations and let user select items
-            self._render_recommendation_selection()
-            
-            # Try-on button
-            col1, col2 = st.columns([1, 1])
-            with col1:
-                if st.button("← Back", type="secondary", key="back_to_upload"):
-                    st.session_state.current_step = "upload"
-                    st.session_state.processing = False
-                    # Clear selections when going back
-                    st.session_state.selected_items = []
-                    st.rerun()
-            
-            with col2:
-                # Only enable button if there are selected items and they're compatible
-                disable_tryon = (
-                    not st.session_state.selected_items or 
-                    not self._check_clothing_compatibility(st.session_state.selected_items)["valid"] or
-                    st.session_state.processing
-                )
-                
-                def on_tryon_click():
-                    st.session_state.button_clicked = True
-                    st.session_state.processing = True
-                
-                st.button(
-                    "Try On Selected Items", 
-                    type="primary", 
-                    disabled=disable_tryon,
-                    on_click=on_tryon_click
-                )
-                
-                # Process try-on when button is clicked
-                if st.session_state.button_clicked and st.session_state.processing and st.session_state.current_step == "select":
-                    self._process_tryon()
-                    st.session_state.button_clicked = False  # Reset for next time
-        
-        elif st.session_state.current_step == "results":
-            # Display try-on results
-            self._render_results_section()
-            
-            # Back button
-            if st.button("← Back to Selection", type="secondary", key="back_to_selection"):
-                st.session_state.current_step = "select"
-                # Ensure no items are selected when returning to selection screen
-                st.session_state.selected_items = []
-                # Don't clear vton_results so user can navigate back and forth
-                st.rerun()
-    
-    def _render_upload_section(self):
-        """Render the user image upload section"""
-        st.subheader("Upload Your Photo")
-        
-        col1, col2 = st.columns([1, 2])
+        # Main content in two columns
+        col1, col2 = st.columns([1, 1])
         
         with col1:
-            uploaded_file = st.file_uploader("Choose a photo of yourself", type=["jpg", "jpeg", "png"])
+            st.subheader("📸 Upload Your Photo")
+            uploaded_file = st.file_uploader("Choose your photo", type=["jpg", "jpeg", "png"])
             
             if uploaded_file is not None:
                 try:
                     image = Image.open(uploaded_file)
-                    # Convert to RGB if needed
                     if image.mode != "RGB":
                         image = image.convert("RGB")
-                    # Store the image in session state
+                    
+                    # Display uploaded image
+                    st.image(image, caption="Your Photo", use_container_width=True)
+                    
+                    # Store as base64
                     buf = io.BytesIO()
                     image.save(buf, format="JPEG")
                     st.session_state.user_image = base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -299,612 +97,180 @@ class VTONFrontend:
                     st.error(f"Error processing image: {e}")
                     st.session_state.user_image = None
             
-            if st.session_state.user_image is None:
-                st.info("Please upload an image to continue")
+            if not st.session_state.user_image:
+                st.info("👆 Please upload your photo to continue")
         
         with col2:
-            if st.session_state.user_image:
-                st.image(
-                    io.BytesIO(base64.b64decode(st.session_state.user_image)),
-                    caption="Your Photo",
-                    use_container_width=True
-                )
-    
-    def _render_preferences_section(self):
-        """Render the user preferences section"""
-        st.subheader("Style Preferences")
-        st.write("Tell us your preferences to get better recommendations")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            style = st.selectbox(
-                "Style Preference",
-                options=["casual", "formal", "business", "sporty", "trendy", "classic", "bohemian"],
-                index=0,
-                help="Choose your preferred clothing style"
-            )
+            st.subheader("⚙️ Style Preferences")
             
-            gender = st.selectbox(
-                "Gender",
-                options=["male", "female", "unisex"],
-                index=0,
-                help="Select your gender for better fitting recommendations"
-            )
-        
-        with col2:
-            season = st.selectbox(
-                "Season",
-                options=["spring", "summer", "fall", "winter"],
-                index=1,
-                help="Season for which you need clothing recommendations"
-            )
+            # Simple preferences
+            gender = st.selectbox("Gender", ["male", "female", "unisex"], index=0)
+            style = st.selectbox("Style", ["casual", "formal", "business", "sporty", "trendy"], index=0)
+            season = st.selectbox("Season", ["spring", "summer", "fall", "winter"], index=1)
+            occasion = st.selectbox("Occasion", ["everyday", "work", "party", "date", "formal"], index=0)
             
-            occasion = st.selectbox(
-                "Occasion",
-                options=["everyday", "work", "party", "date", "formal", "vacation"],
-                index=0,
-                help="The occasion you're shopping for"
-            )
+            st.markdown("---")
+            
+            # Process button
+            process_disabled = st.session_state.processing or st.session_state.user_image is None
+            
+            if st.button("🪄 Get Recommendations & Try-On", disabled=process_disabled, type="primary"):
+                if st.session_state.user_image:
+                    self.process_recommendations_and_tryon(gender, style, season, occasion)
+                else:
+                    st.error("Please upload an image first!")
         
-        # Store preferences in session state
-        st.session_state.preferences = {
-            "style": style,
-            "gender": gender,
-            "season": season,
-            "occasion": occasion
-        }
-        
-        # Number of recommendations
-        st.session_state.max_recommendations = st.slider(
-            "Number of Recommendations",
-            min_value=1,
-            max_value=10,
-            value=3,
-            help="How many recommendations would you like to see"
-        )
+        # Show results if available
+        if st.session_state.results:
+            self.show_results()
     
-    def _process_request(self):
-        """Process the recommendation and try-on request"""
-        if not st.session_state.user_image:
-            st.error("Please upload an image first")
-            return
-        
+    def process_recommendations_and_tryon(self, gender, style, season, occasion):
+        """Process recommendations and try-on in one go"""
         st.session_state.processing = True
         
-        try:
-            with st.spinner("Processing your request... This may take a minute..."):
-                # Prepare the request data
+        # Create progress container
+        progress_container = st.empty()
+        with progress_container.container():
+            st.info("🔄 Processing your request... This may take a few minutes...")
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            try:
+                # Step 1: Get recommendations + try-on
+                status_text.text("Step 1/3: Analyzing your photo and style...")
+                progress_bar.progress(33)
+                
                 request_data = {
                     "user_image": st.session_state.user_image,
-                    "preferences": st.session_state.preferences,
-                    "max_recommendations": st.session_state.max_recommendations,
-                    "include_vton": True
+                    "preferences": {
+                        "style": style,
+                        "gender": gender,
+                        "season": season,
+                        "occasion": occasion
+                    },
+                    "max_recommendations": 3,  # Fixed to 3 for simplicity
+                    "include_vton": True  # Always include try-on
                 }
                 
-                # Make API request
-                response = self._api_call("/recommend-and-tryon", request_data)
+                status_text.text("Step 2/3: Getting personalized recommendations...")
+                progress_bar.progress(66)
+                
+                # Make API call
+                response = self.api_call("/recommend-and-tryon", request_data)
+                
+                status_text.text("Step 3/3: Generating virtual try-on results...")
+                progress_bar.progress(100)
                 
                 if response.get("success"):
-                    st.session_state.recommendations = response.get("recommendations", [])
-                    st.session_state.vton_results = response.get("vton_result", {})
-                    st.session_state.user_analysis = response.get("user_analysis", {})
-                    st.success("Successfully processed your request!")
-                else:
-                    st.error(f"Error: {response.get('message', 'Unknown error')}")
-        except Exception as e:
-            st.error(f"Error: {str(e)}")
-        finally:
-            st.session_state.processing = False
-    
-    def _render_results_section(self):
-        """Render the try-on results"""
-        if not st.session_state.vton_results:
-            st.info("No try-on results yet. Please select items and try them on first.")
-            return
-        
-        st.success("Try-on completed successfully!")
-        st.subheader("Your Virtual Try-On Results")
-        
-        # Display the selected items in a nice grid
-        st.write("Items you tried on:")
-        num_selected = len(st.session_state.selected_items)
-        cols_per_row = min(3, num_selected)
-        
-        if cols_per_row > 0:
-            selected_items_cols = st.columns(cols_per_row)
-            
-            for i, idx in enumerate(st.session_state.selected_items):
-                with selected_items_cols[i % cols_per_row]:
-                    recommendation = st.session_state.recommendations[idx]
-                    st.markdown("<div class='recommendation-card'>", unsafe_allow_html=True)
-                    st.image(
-                        recommendation["image"],
-                        caption=f"{recommendation['type'].replace('_', ' ').title()}",
-                        use_container_width=True
-                    )
-                    st.markdown(f"**Brand**: {recommendation['metadata']['brand']}")
-                    st.markdown("</div>", unsafe_allow_html=True)
-        
-        # Add a separator
-        st.markdown("<hr>", unsafe_allow_html=True)
-        
-        # Display VTON results with nice styling
-        st.subheader("Try-On Images")
-        
-        # Check if we have final image from VTON response
-        final_image_url = st.session_state.vton_results.get("final_image_url")
-        final_image_base64 = st.session_state.vton_results.get("final_image")
-        
-        if final_image_url:
-            st.markdown("<div class='recommendation-card'>", unsafe_allow_html=True)
-            st.image(
-                final_image_url,
-                caption="Your Virtual Try-On Result",
-                use_container_width=True
-            )
-            st.markdown("</div>", unsafe_allow_html=True)
-        elif final_image_base64:
-            st.markdown("<div class='recommendation-card'>", unsafe_allow_html=True)
-            # Handle base64 image
-            if final_image_base64.startswith("data:image"):
-                # Remove data URL prefix if present
-                final_image_base64 = final_image_base64.split(',')[1]
-            
-            st.image(
-                io.BytesIO(base64.b64decode(final_image_base64)),
-                caption="Your Virtual Try-On Result",
-                use_container_width=True
-            )
-            st.markdown("</div>", unsafe_allow_html=True)
-        else:
-            # Fallback: check for try_on_images array (legacy format)
-            try_on_images = st.session_state.vton_results.get("try_on_images", [])
-            if try_on_images:
-                # Display try-on images in a grid
-                vton_cols = st.columns(min(2, len(try_on_images)))
-                
-                for i, image_data in enumerate(try_on_images):
-                    with vton_cols[i % len(vton_cols)]:
-                        st.markdown("<div class='recommendation-card'>", unsafe_allow_html=True)
-                        
-                        image_url = image_data.get("image_url")
-                        image_data_b64 = image_data.get("image_data")
-                        
-                        if image_url:
-                            st.image(
-                                image_url,
-                                caption=f"Try-On Result {i+1}",
-                                use_container_width=True
-                            )
-                        elif image_data_b64:
-                            if image_data_b64.startswith("data:image"):
-                                # Remove data URL prefix
-                                image_data_b64 = image_data_b64.split(',')[1]
-                            
-                            st.image(
-                                io.BytesIO(base64.b64decode(image_data_b64)),
-                                caption=f"Try-On Result {i+1}",
-                                use_container_width=True
-                            )
-                        
-                        st.markdown("</div>", unsafe_allow_html=True)
-            else:
-                st.info("No try-on images were generated. The API may not have completed the try-on process.")
-            
-        # Display any additional processing information
-        with st.expander("Processing Details"):
-            processing_time = st.session_state.vton_results.get("processing_time", 0)
-            st.write(f"Processing Time: {processing_time:.2f} seconds")
-            if "correlation_id" in st.session_state.vton_results:
-                st.write(f"Correlation ID: {st.session_state.vton_results['correlation_id']}")
-            
-        # Start over button with better styling
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            if st.button("Start Over", type="primary", use_container_width=True, key="start_over"):
-                # Reset session state and go back to upload step
-                st.session_state.current_step = "upload"
-                st.session_state.selected_items = []
-                st.session_state.vton_results = None
-                st.session_state.processing = False
-                st.rerun()
-    
-    def _get_recommendations(self):
-        """Get recommendations from the API without try-on"""
-        if not st.session_state.user_image:
-            st.error("Please upload an image first")
-            st.session_state.processing = False
-            return
-        
-        # Always clear selected items when getting recommendations
-        st.session_state.selected_items = []
-        
-        try:
-            # Create a container for the loading animation
-            progress_container = st.empty()
-            with progress_container.container():
-                # Show a more visible loading animation
-                col1, col2, col3 = st.columns([1, 2, 1])
-                with col2:
-                    st.markdown("""
-                    <div style="display: flex; justify-content: center; margin: 2rem 0;">
-                        <div class="stSpinner">
-                            <div class="st-cw">
-                                <div class="st-cw-circle" style="width: 5rem; height: 5rem;"></div>
-                            </div>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    st.markdown("<h3 style='text-align: center;'>Analyzing your style and generating recommendations...</h3>", unsafe_allow_html=True)
-                    st.markdown("<p style='text-align: center;'>This may take a minute. Please wait...</p>", unsafe_allow_html=True)
-            
-            # Prepare the request data - without try-on
-            request_data = {
-                "user_image": st.session_state.user_image,
-                "preferences": st.session_state.preferences,
-                "max_recommendations": st.session_state.max_recommendations,
-                "include_vton": False  # Don't include try-on yet
-            }
-            
-            # Make API request
-            response = self._api_call("/recommend-and-tryon", request_data)
-            
-            # Clear the loading animation
-            progress_container.empty()
-            
-            if response.get("success"):
-                st.session_state.recommendations = response.get("recommendations", [])
-                st.session_state.user_analysis = response.get("user_analysis", {})
-                
-                # Automatically move to the next step without requiring another click
-                st.session_state.current_step = "select"  # Move to selection step
-                st.session_state.selected_items = []  # Clear any previous selections
-                
-                # Use rerun to refresh the page with the new step
-                st.rerun()
-            else:
-                st.error(f"Error: {response.get('message', 'Unknown error')}")
-                st.session_state.processing = False
-        except Exception as e:
-            st.error(f"Error: {str(e)}")
-            st.session_state.processing = False
-    
-    def _render_recommendation_selection(self):
-        """Render the recommendations and let user select items to try on"""
-        # Explicitly clear all selections when entering this page
-        st.session_state.selected_items = []
-        
-        st.subheader("Your Personalized Recommendations")
-        
-        # Display user analysis summary
-        if st.session_state.user_analysis:
-            st.write("Based on your photo analysis:")
-            cols = st.columns(3)
-            
-            # Display dominant colors
-            with cols[0]:
-                if "dominant_colors" in st.session_state.user_analysis:
-                    st.write("**Your Color Palette:**")
-                    colors = st.session_state.user_analysis["dominant_colors"]
-                    color_html = '<div style="display: flex; flex-direction: row;">'
-                    for color in colors[:5]:  # Show up to 5 colors
-                        color_html += f'<div class="color-swatch" style="background-color: {color};"></div>'
-                    color_html += '</div>'
-                    st.markdown(color_html, unsafe_allow_html=True)
-            
-            # Display body shape
-            with cols[1]:
-                if "body_shape" in st.session_state.user_analysis:
-                    st.write(f"**Body Type:** {st.session_state.user_analysis['body_shape'].title()}")
-            
-            # Display season compatibility
-            with cols[2]:
-                if "season_compatibility" in st.session_state.user_analysis:
-                    st.write(f"**Season:** {st.session_state.user_analysis['season_compatibility'].title()}")
-        
-        st.write("Our AI has analyzed your photo and style preferences to recommend these items.")
-        st.write("Select items below that you'd like to try on:")
-        
-        if not st.session_state.recommendations:
-            st.info("No recommendations available. Please go back and get recommendations first.")
-            return
-        
-        # Show all recommendations in a grid layout
-        all_recommendations = st.session_state.recommendations
-        
-        # Group by clothing type for better organization
-        clothing_types = {
-            "tops": ["shirt", "t_shirt", "blouse", "top", "tank_top", "crop_top"],
-            "outerwear": ["jacket", "blazer", "coat", "cardigan", "sweater", "hoodie", "vest"],
-            "bottoms": ["pants", "jeans", "shorts", "skirt", "leggings"],
-            "dresses": ["dress", "maxi_dress", "mini_dress", "cocktail_dress"],
-            "footwear": ["shoes", "sneakers", "boots", "heels"],
-            "accessories": ["hat", "bag", "belt", "scarf", "watch", "gloves"]
-        }
-        
-        # Create a separator between clothing categories
-        st.markdown("<hr style='margin: 1rem 0;'>", unsafe_allow_html=True)
-        
-        # IMPORTANT: Always ensure selected_items is an empty list when viewing recommendations
-        # This prevents any automatic selection of items
-        if st.session_state.current_step == "select" and not st.session_state.selected_items:
-            st.session_state.selected_items = []  # Force empty list for recommendations view
-        
-        # Show each clothing category that has items
-        for category_name, category_types in clothing_types.items():
-            # Get items in this category
-            category_items = [(i, rec) for i, rec in enumerate(all_recommendations) 
-                              if rec["type"] in category_types]
-            
-            if category_items:
-                st.subheader(f"{category_name.title()}")
-                
-                # Create a row of items
-                cols = st.columns(min(3, len(category_items)))
-                
-                for idx, (item_idx, item) in enumerate(category_items):
-                    with cols[idx % len(cols)]:
-                        st.markdown("<div class='recommendation-card'>", unsafe_allow_html=True)
-                        
-                        # Display clothing image
-                        st.image(
-                            item["image"],
-                            caption=f"{item['type'].replace('_', ' ').title()}",
-                            use_container_width=True
-                        )
-                        
-                        # Show match score with progress bar
-                        confidence = int(item["confidence"] * 100)
-                        st.progress(item["confidence"], text=f"Match: {confidence}%")
-                        
-                        # Brand and metadata
-                        st.markdown(f"**Brand**: {item['metadata']['brand']}")
-                        if "price" in item["metadata"] and item["metadata"]["price"] > 0:
-                            st.markdown(f"**Price**: ${item['metadata']['price']:.2f}")
-                        
-                        # Show recommendation reasons
-                        if "reasons" in item["metadata"] and item["metadata"]["reasons"]:
-                            with st.expander("Why we recommend this"):
-                                for reason in item["metadata"]["reasons"][:3]:  # Show up to 3 reasons
-                                    st.markdown(f"• {reason}")
-                        
-                        # Selection and Buy buttons in same row
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            # Generate a unique key to prevent any session state issues
-                            checkbox_key = f"select_{item_idx}_{category_name}_{time.time()}"
-                            
-                            # Always start with unchecked, never use session state for checkbox value
-                            if st.checkbox("Select", value=False, key=checkbox_key):
-                                # Only add to selected_items if checkbox is checked right now
-                                if item_idx not in st.session_state.selected_items:
-                                    st.session_state.selected_items.append(item_idx)
-                            else:
-                                # Always remove from selected_items if checkbox is not checked
-                                if item_idx in st.session_state.selected_items:
-                                    st.session_state.selected_items.remove(item_idx)
-                        
-                        with col2:
-                            # Buy button if product link exists
-                            # Check multiple possible fields for product links
-                            product_link = self._extract_product_link(item)
-                            
-                            if product_link and product_link.strip():
-                                st.markdown(
-                                    f"<a href='{product_link}' target='_blank' class='buy-button'>Buy Now</a>",
-                                    unsafe_allow_html=True
-                                )
-                            else:
-                                st.markdown(
-                                    "<span class='buy-button' style='background-color: #cccccc;'>Not Available</span>",
-                                    unsafe_allow_html=True
-                                )
-                        
-                        st.markdown("</div>", unsafe_allow_html=True)
-                
-                # Add spacing between categories
-                st.markdown("<br>", unsafe_allow_html=True)
-        
-        # Display selection summary in a fixed section at the bottom
-        st.markdown("<div style='position: sticky; bottom: 0; background: white; padding: 1rem; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
-        
-        # Selection summary
-        st.subheader("Your Selection")
-        if st.session_state.selected_items:
-            # Check clothing compatibility
-            compatibility = self._check_clothing_compatibility(st.session_state.selected_items)
-            
-            # Show selected items count
-            selected_count = len(st.session_state.selected_items)
-            selected_items_text = "item" if selected_count == 1 else "items"
-            st.success(f"You've selected {selected_count} {selected_items_text} for try-on")
-            
-            # Show what's selected
-            selected_types = [all_recommendations[i]["type"].replace("_", " ").title() 
-                             for i in st.session_state.selected_items]
-            st.write(f"Selected: {', '.join(selected_types)}")
-            
-            # Show compatibility warnings or conflicts
-            if not compatibility["valid"]:
-                st.error("⚠️ Incompatible combination detected:")
-                for conflict in compatibility["conflicts"]:
-                    st.error(f"- {conflict}")
-                st.warning("Please adjust your selection to continue.")
-            elif compatibility["warnings"]:
-                st.warning("⚠️ Potential issues with this combination:")
-                for warning in compatibility["warnings"]:
-                    st.warning(f"- {warning}")
-        else:
-            st.warning("Please select at least one item to try on")
-        
-        st.markdown("</div>", unsafe_allow_html=True)
-        
-        # Add help section for valid combinations as an expander
-        with st.expander("Help: Valid clothing combinations"):
-            st.markdown("""
-            ### Valid clothing combinations:
-            
-            ✅ **Single Items:**
-            - One top (shirt, t-shirt, blouse, etc.)
-            - One bottom (pants, jeans, shorts, skirt)
-            - One dress
-            - One outerwear piece (jacket, coat, etc.)
-            
-            ✅ **Valid Combinations:**
-            - Top + Bottom (e.g., shirt + pants)
-            - Top + Bottom + Outerwear (e.g., t-shirt + jeans + jacket)
-            - Dress + Outerwear (e.g., dress + cardigan)
-            - Bottom + Leggings (specific combination allowed)
-            
-            ❌ **Invalid Combinations:**
-            - Multiple tops (e.g., shirt + t-shirt)
-            - Multiple bottoms (except with leggings)
-            - Multiple dresses
-            - Dress + Top or Dress + Bottom
-            
-            For best results, choose 1-3 compatible items.
-            """)
-    
-    def _process_tryon(self):
-        """Process the try-on request with only the selected items"""
-        if not st.session_state.selected_items:
-            st.error("Please select at least one item to try on")
-            st.session_state.processing = False
-            return
-            
-        try:
-            # Create a container for the loading animation
-            progress_container = st.empty()
-            countdown_placeholder = st.empty()
-            with progress_container.container():
-                # Show a more visible loading animation
-                col1, col2, col3 = st.columns([1, 2, 1])
-                with col2:
-                    st.markdown("""
-                    <div style="display: flex; justify-content: center; margin: 2rem 0;">
-                        <div class="stSpinner">
-                            <div class="st-cw">
-                                <div class="st-cw-circle" style="width: 5rem; height: 5rem;"></div>
-                            </div>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    st.markdown("<h3 style='text-align: center;'>Processing your virtual try-on...</h3>", unsafe_allow_html=True)
-                    st.markdown("<p style='text-align: center;'>This may take up to 9 minutes. Please don't close this window.</p>", unsafe_allow_html=True)
-            
-            # Display initial countdown
-            countdown_placeholder.markdown("<p style='text-align: center;'>Time remaining: 9m 0s</p>", unsafe_allow_html=True)
-            
-            # Get selected clothing items
-            selected_recommendations = [
-                st.session_state.recommendations[i] for i in st.session_state.selected_items
-            ]
-            
-            # Double-check clothing compatibility
-            compatibility = self._check_clothing_compatibility(st.session_state.selected_items)
-            if not compatibility["valid"]:
-                progress_container.empty()  # Clear the loading animation
-                countdown_placeholder.empty()
-                st.error("Cannot process: incompatible clothing combination")
-                for conflict in compatibility["conflicts"]:
-                    st.error(f"- {conflict}")
-                st.session_state.processing = False
-                return
-            
-            # Create clothing items for VTON in the required format
-            clothing_items = []
-            for rec in selected_recommendations:
-                clothing_items.append({
-                    "image": {
-                        "data": rec["image"]
-                    },
-                    "type": rec["type"],
-                    "context": {
-                        "brand": rec["metadata"]["brand"],
-                        "style": st.session_state.preferences["style"]
+                    st.session_state.results = {
+                        "recommendations": response.get("recommendations", []),
+                        "vton_result": response.get("vton_result", {}),
+                        "user_analysis": response.get("user_analysis", {}),
+                        "processing_time": response.get("processing_time", 0)
                     }
-                })
-            
-            # Prepare try-on request
-            request_data = {
-                "user_photo": {
-                    "data": f"data:image/jpeg;base64,{st.session_state.user_image}"
-                },
-                "clothing_items": clothing_items,
-                "scene_context": {
-                    "style": st.session_state.preferences["style"],
-                    "season": st.session_state.preferences["season"],
-                    "occasion": st.session_state.preferences["occasion"]
-                }
-            }
-            
-            # Make API request to VTON endpoint
-            response = self._api_call("/vton", request_data)
-            
-            # Clear the loading animation
-            progress_container.empty()
-            countdown_placeholder.empty()
-            
-            if response.get("success"):
-                st.session_state.vton_results = response
-                st.session_state.current_step = "results"  # Move to results step
-                st.rerun()
-            else:
-                st.error(f"Error: {response.get('message', 'Unknown error')}")
+                    progress_container.empty()
+                    st.success("✅ Complete! Check your results below!")
+                    st.rerun()
+                else:
+                    st.error(f"❌ Error: {response.get('message', 'Unknown error')}")
+                    
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)}")
+            finally:
                 st.session_state.processing = False
-        except Exception as e:
-            st.error(f"Error: {str(e)}")
-            st.session_state.processing = False
+                progress_container.empty()
     
-    def _check_clothing_compatibility(self, selected_items):
-        """Check if the selected clothing items are compatible for VTON processing
+    def show_results(self):
+        """Display recommendations and try-on results"""
+        st.markdown("---")
+        st.subheader("🎯 Your Results")
         
-        This is a minimal frontend check - all real validation is done in the backend."""
-        # If there are no items, it's not valid for try-on
-        if not selected_items:
-            return {
-                "valid": False,
-                "conflicts": ["Please select at least one item"],
-                "warnings": []
-            }
+        results = st.session_state.results
+        recommendations = results.get("recommendations", [])
+        vton_result = results.get("vton_result", {})
         
-        # For a single item, it's always valid
-        if len(selected_items) == 1:
-            return {
-                "valid": True,
-                "conflicts": [],
-                "warnings": []
-            }
+        # Results in two columns
+        col1, col2 = st.columns([1, 1])
         
-        # Only very basic checks - let backend handle real validation
-        if len(selected_items) > 3:
-            return {
-                "valid": False,
-                "conflicts": ["Please select at most 3 items"],
-                "warnings": []
-            }
+        with col1:
+            st.markdown("### 👔 Recommended Clothing")
+            
+            if recommendations:
+                for i, rec in enumerate(recommendations):
+                    with st.container():
+                        st.markdown("<div class='result-card'>", unsafe_allow_html=True)
+                        
+                        # Item info
+                        confidence = int(rec["confidence"] * 100)
+                        st.markdown(f"**{rec['type'].replace('_', ' ').title()}** - {confidence}% match")
+                        
+                        # Image
+                        st.image(rec["image"], use_container_width=True)
+                        
+                        # Metadata
+                        metadata = rec.get("metadata", {})
+                        st.markdown(f"**Brand:** {metadata.get('brand', 'Unknown')}")
+                        if metadata.get('price', 0) > 0:
+                            st.markdown(f"**Price:** ${metadata['price']:.2f}")
+                        
+                        # Buy button
+                        product_link = metadata.get('product_link', '')
+                        if product_link:
+                            st.markdown(f"[🛒 Buy Now]({product_link})", unsafe_allow_html=True)
+                        
+                        st.markdown("</div>", unsafe_allow_html=True)
+            else:
+                st.info("No recommendations generated")
         
-        # Let the backend handle all other validation
-        return {
-            "valid": True,
-            "conflicts": [],
-            "warnings": []
-        }
+        with col2:
+            st.markdown("### 🪞 Virtual Try-On Result")
+            
+            if vton_result:
+                st.markdown("<div class='result-card'>", unsafe_allow_html=True)
+                
+                # Try to get the final image
+                final_image_url = vton_result.get("final_image_url")
+                final_image_base64 = vton_result.get("final_image")
+                
+                if final_image_url:
+                    st.image(final_image_url, caption="Your Virtual Try-On", use_container_width=True)
+                elif final_image_base64:
+                    # Handle base64 image
+                    if final_image_base64.startswith("data:image"):
+                        final_image_base64 = final_image_base64.split(',')[1]
+                    st.image(io.BytesIO(base64.b64decode(final_image_base64)), 
+                            caption="Your Virtual Try-On", use_container_width=True)
+                else:
+                    st.info("Try-on result not available. The API may not have completed the processing.")
+                
+                # Processing info
+                processing_time = vton_result.get("processing_time", 0)
+                st.markdown(f"**Processing Time:** {processing_time:.1f} seconds")
+                
+                st.markdown("</div>", unsafe_allow_html=True)
+            else:
+                st.info("Virtual try-on result not available")
+        
+        # Reset button
+        st.markdown("---")
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col2:
+            if st.button("🔄 Start Over", type="secondary", use_container_width=True):
+                st.session_state.results = None
+                st.session_state.user_image = None
+                st.session_state.processing = False
+                st.rerun()
     
-    def _api_call(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Make an API call to the backend service"""
+    def api_call(self, endpoint, data):
+        """Make API call to backend"""
         url = f"{self.api_base_url}{endpoint}"
         
         try:
-            # Add a small delay to allow the UI to update before making the API call
-            time.sleep(0.1)
-            
             response = requests.post(
                 url,
                 json=data,
                 headers={"Content-Type": "application/json"},
-                timeout=540
+                timeout=300  # 5 minutes timeout
             )
             
             if response.status_code == 200:
@@ -919,86 +285,33 @@ class VTONFrontend:
                 raise Exception(error_msg)
         
         except requests.Timeout:
-            raise Exception("API request timed out after 9 minutes. Please try again with a smaller request.")
+            raise Exception("Request timed out. Please try again.")
         except requests.ConnectionError:
-            raise Exception("Could not connect to the API server. Please check your internet connection.")
-        except requests.RequestException as e:
-            raise Exception(f"API Connection Error: {e}")
+            raise Exception("Could not connect to API. Please check if the backend is running.")
         except Exception as e:
-            raise Exception(f"Unexpected error: {str(e)}")
-    
-    def _extract_product_link(self, item: Dict[str, Any]) -> str:
-        """Extract product link from recommendation item, handling various formats"""
-        # Initialize to empty string
-        product_link = ""
-        
-        # Check in metadata.product_link (API standard)
-        if "metadata" in item and "product_link" in item["metadata"]:
-            product_link = item["metadata"]["product_link"]
-            logger.debug(f"Found product link in metadata.product_link: {product_link}")
-        
-        # If not found, check for metadata.link (alternative)
-        if not product_link and "metadata" in item and "link" in item["metadata"]:
-            product_link = item["metadata"]["link"]
-            logger.debug(f"Found product link in metadata.link: {product_link}")
-            
-        # If still not found, check for direct link property (from DB)
-        if not product_link and "link" in item:
-            product_link = item["link"]
-            logger.debug(f"Found product link in direct link property: {product_link}")
-            
-        # Last resort: check for url fields
-        if not product_link and "url" in item:
-            product_link = item["url"]
-            logger.debug(f"Found product link in url field: {product_link}")
-        if not product_link and "metadata" in item and "url" in item["metadata"]:
-            product_link = item["metadata"]["url"]
-            logger.debug(f"Found product link in metadata.url: {product_link}")
-            
-        # If found, validate that it's a proper URL
-        if product_link:
-            # Basic URL validation
-            if not product_link.startswith(("http://", "https://")):
-                logger.warning(f"Invalid product link format: {product_link}")
-                return ""
-            
-            logger.info(f"Successfully extracted product link: {product_link}")
-        else:
-            logger.warning("No product link found in item")
-                
-        return product_link
-
+            raise Exception(f"API Error: {str(e)}")
 
 if __name__ == "__main__":
-    # Display app information in sidebar
+    # Sidebar info
     st.sidebar.title("AI Fashion Studio")
-    st.sidebar.info(
-        "This application lets you view personalized clothing recommendations "
-        "and try them on virtually using AI technology."
-    )
-    
-    # Display workflow steps in sidebar
-    st.sidebar.subheader("Workflow")
-    st.sidebar.markdown(
-        "1. Upload your photo\n"
-        "2. Get clothing recommendations\n"
-        "3. Select items to try on\n"
-        "4. View try-on results"
-    )
-    
-    # Add version info in sidebar footer
+    st.sidebar.info("Simple workflow: Upload → Set preferences → Get results!")
     st.sidebar.markdown("---")
-    st.sidebar.caption("AI Fashion Studio v2.0")
+    st.sidebar.caption("v3.0 - Simplified")
     
+    # API status check
     try:
-        # Initialize and run the app
-        app = VTONFrontend()
-        app.run()
-    except ValueError as e:
-        if "API_BASE_URL is not configured" in str(e):
-            st.error("⚠️ Application cannot start: API configuration is missing.")
-            st.info("Please configure the app by setting API_BASE_URL in Streamlit secrets.")
+        app = SimpleVTONApp()
+        response = requests.get(f"{app.api_base_url}/health", timeout=3)
+        if response.status_code == 200:
+            st.sidebar.success("✅ Backend Connected")
         else:
-            st.error(f"Error: {e}")
+            st.sidebar.warning("⚠️ Backend Issues")
+    except Exception:
+        st.sidebar.error("❌ Backend Offline")
+    
+    # Run app
+    try:
+        app = SimpleVTONApp()
+        app.run()
     except Exception as e:
-        st.error(f"An unexpected error occurred: {e}")
+        st.error(f"Application error: {e}")
