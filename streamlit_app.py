@@ -116,19 +116,14 @@ class SimpleVTONApp:
             # Process button
             process_disabled = st.session_state.processing or st.session_state.user_image is None
             
-            def on_process_click():
-                st.session_state.button_clicked = True
-                st.session_state.processing = True
-            
-            st.button("🪄 Get Recommendations & Try-On", 
-                     disabled=process_disabled, 
-                     type="primary", 
-                     on_click=on_process_click)
-            
-            # Process when button is clicked
-            if st.session_state.button_clicked and st.session_state.processing:
-                self.process_recommendations_and_tryon(gender, style, season, occasion)
-                st.session_state.button_clicked = False  # Reset for next time
+            if st.button("🪄 Get Recommendations & Try-On", 
+                        disabled=process_disabled, 
+                        type="primary"):
+                if st.session_state.user_image:
+                    st.session_state.processing = True
+                    self.process_recommendations_and_tryon(gender, style, season, occasion)
+                else:
+                    st.error("Please upload an image first!")
         
         # Show results if available
         if st.session_state.results:
@@ -141,9 +136,11 @@ class SimpleVTONApp:
             st.session_state.processing = False
             return
         
+        # Immediately rerun to update the UI with processing state
+        st.rerun()
+        
         # Create progress container
-        progress_container = st.empty()
-        with progress_container.container():
+        with st.container():
             st.info("🔄 Processing your request... This may take several minutes...")
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -184,9 +181,7 @@ class SimpleVTONApp:
                     }
                     progress_bar.progress(100)
                     status_text.text("✅ Processing complete!")
-                    progress_container.empty()
                     st.success("✅ Complete! Check your results below!")
-                    st.rerun()
                 else:
                     st.error(f"❌ Error: {response.get('message', 'Unknown error')}")
                     
@@ -194,8 +189,8 @@ class SimpleVTONApp:
                 st.error(f"❌ Error: {str(e)}")
             finally:
                 st.session_state.processing = False
-                if 'progress_container' in locals():
-                    progress_container.empty()
+                # Force rerun to update button state
+                st.rerun()
     
     def show_results(self):
         """Display recommendations and try-on results"""
@@ -362,7 +357,6 @@ class SimpleVTONApp:
                 st.session_state.results = None
                 st.session_state.user_image = None
                 st.session_state.processing = False
-                st.session_state.button_clicked = False
                 st.rerun()
     
     def api_call(self, endpoint, data):
