@@ -1,741 +1,686 @@
 """
-VTON + Recommendation Engine - Minimal Streamlit Frontend
-A clean, focused application for virtual try-on with AI recommendations.
+Virtual Try-On API Service (v1.0)
+Production-ready FastAPI service with modular architecture and enhanced error handling.
 """
 
-import streamlit as st
-import requests
+import aiohttp
 import base64
-import time
-import json
-import os
-from PIL import Image
-import io
 import logging
-from typing import Dict, List, Any, Optional
-from dotenv import load_dotenv
+import time
+import uuid
+from typing import List, Dict, Optional, Any
+from contextlib import asynccontextmanager
 
-# Load environment variables
-load_dotenv()
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field, field_validator
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# Import our modular components
+from config.settings import settings
+from core.exceptions import (
+    VTONException, ValidationError, global_exception_handler, log_error, create_error_response
 )
+from core.image_processing import handle_image_input, get_cache_stats, clear_cache
+from core.masking import ClothingType, masking_system
+from core.comfyui import comfyui_client
+from core.storage import storage
+
+# Import recommendation engine components
+from recommendation.analyzer import UserAnalyzer
+from recommendation.engine import RecommendationEngine, RecommendationRequest
+
 logger = logging.getLogger(__name__)
 
-# Configure page
-st.set_page_config(
-    page_title="AI Fashion Studio",
-    page_icon="�",
-    layout="wide"
+# Lifecycle management
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle."""
+    logger.info("Starting Virtual Try-On API Service v1.0")
+    yield
+    logger.info("Shutting down Virtual Try-On API Service")
+    await comfyui_client.close()
+
+# Initialize recommendation components
+user_analyzer = UserAnalyzer()
+recommendation_engine = RecommendationEngine()
+
+# Create FastAPI application
+app = FastAPI(
+    title=settings.api_title,
+    description=settings.api_description,
+    version=settings.api_version,
+    lifespan=lifespan
 )
 
-# Custom CSS for styling
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 2.5rem;
-        text-align: center;
-        margin-bottom: 1.5rem;
-    }
-    .recommendation-card {
-        border: 1px solid #f0f0f0;
-        border-radius: 10px;
-        padding: 1rem;
-        margin-bottom: 1rem;
-        background-color: #ffffff;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-    }
-    .buy-button {
-        background-color: #4CAF50;
-        color: white;
-        padding: 8px 16px;
-        text-align: center;
-        text-decoration: none;
-        display: inline-block;
-        border-radius: 4px;
-        margin-top: 10px;
-    }
-    .sub-header {
-        font-size: 1.75rem;
-        margin-top: 1.5rem;
-        margin-bottom: 1rem;
-        color: #333;
-    }
-    .error-message {
-        background: linear-gradient(135deg, #fd79a8 0%, #e84393 100%);
-        color: white;
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-    }
-    .success-message {
-        background: linear-gradient(135deg, #00b894 0%, #00a085 100%);
-        color: white;
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-    }
-    .metric-card {
-        background: linear-gradient(135deg, #74b9ff 0%, #0984e3 100%);
-        padding: 1rem;
-        border-radius: 10px;
-        color: white;
-        text-align: center;
-    }
-    .color-swatch {
-        display: inline-block;
-        width: 25px;
-        height: 25px;
-        margin-right: 5px;
-        border-radius: 50%;
-        border: 1px solid #ddd;
-    }
-    .stProgress > div > div > div > div {
-        background-color: #4CAF50;
-    }
-</style>
-""", unsafe_allow_html=True)
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins,
+    allow_credentials=True,
+    allow_methods=settings.allowed_methods,
+    allow_headers=settings.allowed_headers,
+)
 
-class VTONFrontend:
-    """VTON and Recommendation Frontend Application"""
+# Add global exception handler
+app.add_exception_handler(Exception, global_exception_handler)
+
+# Pydantic models
+class ImageInput(BaseModel):
+    """Image input model supporting URLs and base64 data."""
+    data: str = Field(..., description="Image URL or base64 string", min_length=10)
     
-    def __init__(self):
-        """Initialize the application with configuration and session state"""
-        # API Configuration from environment variable
-        default_api_url = os.getenv("API_BASE_URL", "http://localhost:8000")
-        self.api_base_url = st.sidebar.text_input(
-            "API URL", 
-            value=default_api_url,
-            help="URL of the VTON API service"
+    @field_validator('data')
+    @classmethod
+    def validate_image_input(cls, v):
+        """Validate image input format."""
+        if not v or not v.strip():
+            raise ValueError("Image data cannot be empty")
+        
+        v = v.strip()
+        
+        # Check if it's a URL
+        if v.startswith(("http://", "https://")):
+            from urllib.parse import urlparse
+            try:
+                parsed = urlparse(v)
+                if not all([parsed.scheme, parsed.netloc]):
+                    raise ValueError("Invalid URL format")
+                return v
+            except Exception:
+                raise ValueError("Invalid URL format")
+        
+        # Check if it's a data URI
+        if v.startswith("data:image/"):
+            try:
+                header, data = v.split(",", 1)
+                base64.b64decode(data, validate=True)
+                return v
+            except Exception:
+                raise ValueError("Invalid base64 image format")
+        
+        # Check if it's raw base64
+        try:
+            base64.b64decode(v, validate=True)
+            return v
+        except Exception:
+            raise ValueError("Invalid image input: must be URL or base64")
+
+class ClothingItem(BaseModel):
+    """Individual clothing item model."""
+    image: ImageInput
+    type: ClothingType
+    context: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+class VTONRequest(BaseModel):
+    """Virtual try-on request model."""
+    user_photo: ImageInput
+    clothing_items: List[ClothingItem] = Field(..., min_length=1, max_length=5)
+    scene_context: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+class VTONResponse(BaseModel):
+    """Virtual try-on response model."""
+    success: bool
+    final_image_url: Optional[str] = Field(None, description="Public URL of the generated image (preferred)")
+    final_image: Optional[str] = Field(None, description="Base64 encoded image (fallback if URL unavailable)")
+    processing_time: float
+    clothing_analysis: Dict[str, Any]
+    masking_applied: List[Dict[str, Any]]
+    debug_info: Dict[str, Any] = Field(default_factory=dict)
+
+class HealthResponse(BaseModel):
+    """Health check response model."""
+    status: str
+    comfyui_connected: bool
+    timestamp: float
+    cache_stats: Dict[str, Any]
+    system_info: Dict[str, Any]
+
+class ClothingTypesResponse(BaseModel):
+    """Clothing types information response model."""
+    total_supported_types: int
+    clothing_types: List[str]
+    categories: Dict[str, List[str]]
+    example_requests: Dict[str, Any]
+
+# New models for recommendation integration
+class UserPreferences(BaseModel):
+    """User style preferences model."""
+    style: str = Field(..., description="Style preference: casual, formal, business, sporty")
+    gender: str = Field(..., description="Gender: male, female, unisex")
+    season: str = Field(..., description="Season: spring, summer, fall, winter")
+    occasion: Optional[str] = Field(None, description="Occasion: everyday, work, party, date")
+    price_max: Optional[float] = Field(None, description="Maximum price preference")
+
+class RecommendationVTONRequest(BaseModel):
+    """Complete recommendation + VTON request model."""
+    user_image: str = Field(..., description="Base64 encoded user image")
+    preferences: UserPreferences
+    max_recommendations: int = Field(default=3, ge=1, le=5, description="Number of recommendations")
+    include_vton: bool = Field(default=True, description="Include virtual try-on processing")
+
+class RecommendationVTONResponse(BaseModel):
+    """Complete recommendation + VTON response model."""
+    success: bool
+    recommendations: List[Dict[str, Any]]
+    user_analysis: Dict[str, Any]
+    vton_result: Optional[Dict[str, Any]] = None
+    processing_time: float
+    correlation_id: str
+
+# API Routes
+
+@app.post("/vton", response_model=VTONResponse)
+async def virtual_try_on(request: VTONRequest, http_request: Request):
+    """
+    Virtual Try-On endpoint with intelligent layering and masking.
+    
+    Processes a user photo with 1-5 clothing items to create a realistic try-on result.
+    Features intelligent layering, context-aware masking, and optimized processing.
+    """
+    start_time = time.time()
+    correlation_id = str(uuid.uuid4())
+    
+    logger.info(f"[{correlation_id}] Starting VTON request with {len(request.clothing_items)} items")
+    
+    try:
+        # Validate clothing combination
+        clothing_types = [item.type for item in request.clothing_items]
+        validation_result = masking_system.validate_clothing_combination(clothing_types)
+        
+        if not validation_result["valid"]:
+            raise ValidationError(
+                "Invalid clothing combination",
+                details={
+                    "conflicts": validation_result["conflicts"],
+                    "clothing_items": [t.value for t in clothing_types]
+                },
+                correlation_id=correlation_id
+            )
+        
+        # Analyze clothing items for intelligent processing
+        clothing_analysis = masking_system.analyze_clothing_items(
+            clothing_types, 
+            request.scene_context
         )
         
-        # Initialize session state for storing uploaded images and results
-        if "user_image" not in st.session_state:
-            st.session_state.user_image = None
-        if "recommendations" not in st.session_state:
-            st.session_state.recommendations = None
-        if "vton_results" not in st.session_state:
-            st.session_state.vton_results = None
-        if "processing" not in st.session_state:
-            st.session_state.processing = False
-        if "selected_items" not in st.session_state:
-            st.session_state.selected_items = []
-        if "current_step" not in st.session_state:
-            st.session_state.current_step = "upload"  # Options: "upload", "select", "results"
-    
-    def run(self):
-        """Run the main application"""
-        st.markdown("<h1 class='main-header'>AI Fashion Studio</h1>", unsafe_allow_html=True)
+        logger.info(f"[{correlation_id}] Clothing analysis: {len(clothing_analysis['processing_order'])} items, order: {clothing_analysis['processing_order']}")
         
-        # Show different content based on current step
-        if st.session_state.current_step == "upload":
-            self._render_upload_section()
-            self._render_preferences_section()
-            
-            # Process button to get recommendations
-            if st.button("Get Recommendations", type="primary", disabled=st.session_state.processing):
-                self._get_recommendations()
-                
-        elif st.session_state.current_step == "select":
-            # Display recommendations and let user select items
-            self._render_recommendation_selection()
-            
-            # Try-on button
-            col1, col2 = st.columns([1, 1])
-            with col1:
-                if st.button("← Back", type="secondary"):
-                    st.session_state.current_step = "upload"
-                    st.rerun()
-            
-            with col2:
-                # Only enable button if there are selected items and they're compatible
-                disable_tryon = not st.session_state.selected_items or (
-                    st.session_state.selected_items and 
-                    not self._check_clothing_compatibility(st.session_state.selected_items)["valid"]
-                )
-                if st.button("Try On Selected Items", type="primary", disabled=disable_tryon):
-                    self._process_tryon()
+        # Get aiohttp session from ComfyUI client
+        session = await comfyui_client.get_session()
         
-        elif st.session_state.current_step == "results":
-            # Display try-on results
-            self._render_results_section()
-            
-            # Back button
-            if st.button("← Back to Selection", type="secondary"):
-                st.session_state.current_step = "select"
-                st.rerun()
-    
-    def _render_upload_section(self):
-        """Render the user image upload section"""
-        st.subheader("Upload Your Photo")
-        
-        col1, col2 = st.columns([1, 2])
-        
-        with col1:
-            uploaded_file = st.file_uploader("Choose a photo of yourself", type=["jpg", "jpeg", "png"])
-            
-            if uploaded_file is not None:
-                try:
-                    image = Image.open(uploaded_file)
-                    # Convert to RGB if needed
-                    if image.mode != "RGB":
-                        image = image.convert("RGB")
-                    # Store the image in session state
-                    buf = io.BytesIO()
-                    image.save(buf, format="JPEG")
-                    st.session_state.user_image = base64.b64encode(buf.getvalue()).decode("utf-8")
-                except Exception as e:
-                    st.error(f"Error processing image: {e}")
-                    st.session_state.user_image = None
-            
-            if st.session_state.user_image is None:
-                st.info("Please upload an image to continue")
-        
-        with col2:
-            if st.session_state.user_image:
-                st.image(
-                    io.BytesIO(base64.b64decode(st.session_state.user_image)),
-                    caption="Your Photo",
-                    use_column_width=True
-                )
-    
-    def _render_preferences_section(self):
-        """Render the user preferences section"""
-        st.subheader("Style Preferences")
-        st.write("Tell us your preferences to get better recommendations")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            style = st.selectbox(
-                "Style Preference",
-                options=["casual", "formal", "business", "sporty", "trendy", "classic", "bohemian"],
-                index=0,
-                help="Choose your preferred clothing style"
-            )
-            
-            gender = st.selectbox(
-                "Gender",
-                options=["male", "female", "unisex"],
-                index=0,
-                help="Select your gender for better fitting recommendations"
-            )
-        
-        with col2:
-            season = st.selectbox(
-                "Season",
-                options=["spring", "summer", "fall", "winter"],
-                index=1,
-                help="Season for which you need clothing recommendations"
-            )
-            
-            occasion = st.selectbox(
-                "Occasion",
-                options=["everyday", "work", "party", "date", "formal", "vacation"],
-                index=0,
-                help="The occasion you're shopping for"
-            )
-        
-        max_price = st.slider(
-            "Maximum Price ($)",
-            min_value=50,
-            max_value=500,
-            value=200,
-            step=50,
-            help="Maximum price for recommended items"
+        # Process and upload user image
+        user_image_bytes = await handle_image_input(session, request.user_photo.data, correlation_id)
+        current_user_filename = await comfyui_client.upload_image(
+            user_image_bytes, 
+            f"user_{correlation_id}.jpg", 
+            correlation_id
         )
         
-        # Store preferences in session state
-        st.session_state.preferences = {
-            "style": style,
-            "gender": gender,
-            "season": season,
-            "occasion": occasion,
-            "price_max": max_price
-        }
+        # Process clothing items in optimal order
+        masking_applied = []
         
-        # Number of recommendations
-        st.session_state.max_recommendations = st.slider(
-            "Number of Recommendations",
-            min_value=1,
-            max_value=10,
-            value=5,
-            help="How many recommendations would you like to see"
-        )
-    
-    def _process_request(self):
-        """Process the recommendation and try-on request"""
-        if not st.session_state.user_image:
-            st.error("Please upload an image first")
-            return
+        # Group clothing items by workflow nodes
+        top_items = []  # Node 84: tops, dresses, outerwear
+        bottom_items = []  # Node 83: bottoms
         
-        st.session_state.processing = True
-        
-        try:
-            with st.spinner("Processing your request... This may take a minute..."):
-                # Prepare the request data
-                request_data = {
-                    "user_image": st.session_state.user_image,
-                    "preferences": st.session_state.preferences,
-                    "max_recommendations": st.session_state.max_recommendations,
-                    "include_vton": True
-                }
-                
-                # Make API request
-                response = self._api_call("/recommend-and-tryon", request_data)
-                
-                if response.get("success"):
-                    st.session_state.recommendations = response.get("recommendations", [])
-                    st.session_state.vton_results = response.get("vton_result", {})
-                    st.session_state.user_analysis = response.get("user_analysis", {})
-                    st.success("Successfully processed your request!")
-                else:
-                    st.error(f"Error: {response.get('message', 'Unknown error')}")
-        except Exception as e:
-            st.error(f"Error: {str(e)}")
-        finally:
-            st.session_state.processing = False
-    
-    def _render_results_section(self):
-        """Render the try-on results"""
-        if not st.session_state.vton_results:
-            st.info("No try-on results yet. Please select items and try them on first.")
-            return
-        
-        st.subheader("Your Virtual Try-On Results")
-        
-        # Display the selected items
-        st.write("Items you tried on:")
-        selected_items_cols = st.columns(min(3, len(st.session_state.selected_items)))
-        
-        for i, idx in enumerate(st.session_state.selected_items):
-            with selected_items_cols[i % len(selected_items_cols)]:
-                recommendation = st.session_state.recommendations[idx]
-                st.image(
-                    recommendation["image"],
-                    caption=f"{recommendation['type'].replace('_', ' ').title()}",
-                    use_column_width=True
-                )
-        
-        # Display VTON results
-        st.subheader("Try-On Images")
-        try_on_images = st.session_state.vton_results.get("try_on_images", [])
-        if try_on_images:
-            # Display try-on images in a grid
-            vton_cols = st.columns(min(2, len(try_on_images)))
-            
-            for i, image_data in enumerate(try_on_images):
-                with vton_cols[i % len(vton_cols)]:
-                    image_url = image_data.get("image_url")
-                    image_data_b64 = image_data.get("image_data")
-                    
-                    if image_url:
-                        st.image(
-                            image_url,
-                            caption=f"Try-On Result {i+1}",
-                            use_column_width=True
-                        )
-                    elif image_data_b64:
-                        if image_data_b64.startswith("data:image"):
-                            # Remove data URL prefix
-                            image_data_b64 = image_data_b64.split(',')[1]
-                        
-                        st.image(
-                            io.BytesIO(base64.b64decode(image_data_b64)),
-                            caption=f"Try-On Result {i+1}",
-                            use_column_width=True
-                        )
-        else:
-            st.info("No try-on images were generated.")
-            
-        # Display any additional processing information
-        with st.expander("Processing Details"):
-            processing_time = st.session_state.vton_results.get("processing_time", 0)
-            st.write(f"Processing Time: {processing_time:.2f} seconds")
-            if "correlation_id" in st.session_state.vton_results:
-                st.write(f"Correlation ID: {st.session_state.vton_results['correlation_id']}")
-            
-        # Start over button
-        if st.button("Start Over", type="primary"):
-            # Reset session state and go back to upload step
-            st.session_state.current_step = "upload"
-            st.session_state.selected_items = []
-            st.session_state.vton_results = None
-            st.rerun()
-    
-    def _get_recommendations(self):
-        """Get recommendations from the API without try-on"""
-        if not st.session_state.user_image:
-            st.error("Please upload an image first")
-            return
-        
-        st.session_state.processing = True
-        
-        try:
-            with st.spinner("Analyzing your style and generating recommendations..."):
-                # Prepare the request data - without try-on
-                request_data = {
-                    "user_image": st.session_state.user_image,
-                    "preferences": st.session_state.preferences,
-                    "max_recommendations": st.session_state.max_recommendations,
-                    "include_vton": False  # Don't include try-on yet
-                }
-                
-                # Make API request
-                response = self._api_call("/recommend-and-tryon", request_data)
-                
-                if response.get("success"):
-                    st.session_state.recommendations = response.get("recommendations", [])
-                    st.session_state.user_analysis = response.get("user_analysis", {})
-                    
-                    # Display user analysis summary
-                    st.subheader("Your Style Analysis")
-                    cols = st.columns(3)
-                    
-                    # Display dominant colors
-                    with cols[0]:
-                        if "dominant_colors" in st.session_state.user_analysis:
-                            st.write("**Your Color Palette:**")
-                            colors = st.session_state.user_analysis["dominant_colors"]
-                            color_html = '<div style="display: flex; flex-direction: row;">'
-                            for color in colors[:5]:  # Show up to 5 colors
-                                color_html += f'<div class="color-swatch" style="background-color: {color};"></div>'
-                            color_html += '</div>'
-                            st.markdown(color_html, unsafe_allow_html=True)
-                    
-                    # Display body shape
-                    with cols[1]:
-                        if "body_shape" in st.session_state.user_analysis:
-                            st.write(f"**Body Type:** {st.session_state.user_analysis['body_shape'].title()}")
-                    
-                    # Display season compatibility
-                    with cols[2]:
-                        if "season_compatibility" in st.session_state.user_analysis:
-                            st.write(f"**Season:** {st.session_state.user_analysis['season_compatibility'].title()}")
-                    
-                    st.session_state.current_step = "select"  # Move to selection step
-                    st.session_state.selected_items = []  # Clear any previous selections
-                    st.success("Recommendations generated successfully based on your style!")
-                else:
-                    st.error(f"Error: {response.get('message', 'Unknown error')}")
-        except Exception as e:
-            st.error(f"Error: {str(e)}")
-        finally:
-            st.session_state.processing = False
-    
-    def _render_recommendation_selection(self):
-        """Render the recommendations and let user select items to try on"""
-        st.subheader("Your Personalized Recommendations")
-        st.write("Our AI has analyzed your photo and style preferences to recommend these items.")
-        st.write("Select one or more items below that you'd like to try on:")
-        
-        if not st.session_state.recommendations:
-            st.info("No recommendations available. Please go back and get recommendations first.")
-            return
-        
-        # Group recommendations by clothing type
-        clothing_categories = {
-            "tops": ["shirt", "t_shirt", "blouse", "top", "tank_top", "crop_top"],
-            "outerwear": ["jacket", "blazer", "coat", "cardigan", "sweater", "hoodie", "vest"],
-            "bottoms": ["pants", "jeans", "shorts", "skirt", "leggings"],
-            "dresses": ["dress", "maxi_dress", "mini_dress", "cocktail_dress"],
-            "footwear": ["shoes", "sneakers", "boots", "heels"],
-            "accessories": ["hat", "bag", "belt", "scarf", "watch", "gloves"]
-        }
-        
-        grouped_recommendations = {}
-        for category, types in clothing_categories.items():
-            grouped_recommendations[category] = []
-            for i, rec in enumerate(st.session_state.recommendations):
-                if rec["type"] in types:
-                    grouped_recommendations[category].append((i, rec))
-        
-        # Display recommendations by category with tabs
-        categories_with_items = [cat for cat, items in grouped_recommendations.items() if items]
-        if categories_with_items:
-            tabs = st.tabs(categories_with_items)
-            
-            for i, category in enumerate(categories_with_items):
-                with tabs[i]:
-                    items = grouped_recommendations[category]
-                    
-                    # Create columns for items in this category
-                    num_cols = min(3, len(items))
-                    if num_cols > 0:
-                        cols = st.columns(num_cols)
-                        
-                        for j, (index, recommendation) in enumerate(items):
-                            with cols[j % num_cols]:
-                                st.markdown(f"<div class='recommendation-card'>", unsafe_allow_html=True)
-                                
-                                # Display clothing image
-                                st.image(
-                                    recommendation["image"],
-                                    caption=f"{recommendation['type'].replace('_', ' ').title()}",
-                                    use_column_width=True
-                                )
-                                
-                                # Show match score with progress bar
-                                confidence = int(recommendation["confidence"] * 100)
-                                st.progress(recommendation["confidence"], text=f"Match: {confidence}%")
-                                
-                                # Checkbox for selection
-                                item_key = f"item_{index}"
-                                if st.checkbox("Select for try-on", key=item_key):
-                                    if index not in st.session_state.selected_items:
-                                        st.session_state.selected_items.append(index)
-                                else:
-                                    if index in st.session_state.selected_items:
-                                        st.session_state.selected_items.remove(index)
-                                
-                                # Display recommendation details
-                                st.markdown(f"**Brand**: {recommendation['metadata']['brand']}")
-                                
-                                if "price" in recommendation["metadata"] and recommendation["metadata"]["price"] > 0:
-                                    st.markdown(f"**Price**: ${recommendation['metadata']['price']:.2f}")
-                                
-                                # Display reasons for recommendation
-                                if "reasons" in recommendation["metadata"] and recommendation["metadata"]["reasons"]:
-                                    with st.expander("Why This Item?"):
-                                        for reason in recommendation["metadata"]["reasons"]:
-                                            st.markdown(f"• {reason}")
-                                
-                                # Buy button
-                                if "product_link" in recommendation["metadata"] and recommendation["metadata"]["product_link"]:
-                                    st.markdown(
-                                        f"<a href='{recommendation['metadata']['product_link']}' target='_blank' class='buy-button'>Buy Now</a>",
-                                        unsafe_allow_html=True
-                                    )
-                                
-                                st.markdown("</div>", unsafe_allow_html=True)
-        else:
-            st.warning("No recommendations found in any category.")
-        
-        # Display selection summary
-        st.subheader("Your Selection")
-        if st.session_state.selected_items:
-            # Check clothing compatibility
-            compatibility = self._check_clothing_compatibility(st.session_state.selected_items)
-            
-            # Show selected items count
-            st.success(f"You've selected {len(st.session_state.selected_items)} item(s) for try-on")
-            
-            # Show compatibility warnings or conflicts
-            if not compatibility["valid"]:
-                st.error("⚠️ Incompatible combination detected:")
-                for conflict in compatibility["conflicts"]:
-                    st.error(f"- {conflict}")
-                st.warning("Please adjust your selection to continue.")
-            elif compatibility["warnings"]:
-                st.warning("⚠️ Potential issues with this combination:")
-                for warning in compatibility["warnings"]:
-                    st.warning(f"- {warning}")
-        else:
-            st.warning("Please select at least one item to try on")
-        
-        # Add help section for valid combinations
-        with st.expander("Help: Valid clothing combinations"):
-            st.markdown("""
-            ### Valid clothing combinations:
-            
-            ✅ **Single Items:**
-            - One top (shirt, t-shirt, blouse, etc.)
-            - One bottom (pants, jeans, shorts, skirt)
-            - One dress
-            - One outerwear piece (jacket, coat, etc.)
-            
-            ✅ **Valid Combinations:**
-            - Top + Bottom (e.g., shirt + pants)
-            - Top + Bottom + Outerwear (e.g., t-shirt + jeans + jacket)
-            - Dress + Outerwear (e.g., dress + cardigan)
-            - Bottom + Leggings (specific combination allowed)
-            
-            ❌ **Invalid Combinations:**
-            - Multiple tops (e.g., shirt + t-shirt)
-            - Multiple bottoms (except with leggings)
-            - Multiple dresses
-            - Dress + Top or Dress + Bottom
-            
-            For best results, choose 1-3 compatible items.
-            """)
-    
-    def _process_tryon(self):
-        """Process the try-on request with only the selected items"""
-        st.session_state.processing = True
-        
-        try:
-            with st.spinner("Processing try-on... This may take a minute..."):
-                # Get selected clothing items
-                selected_recommendations = [
-                    st.session_state.recommendations[i] for i in st.session_state.selected_items
-                ]
-                
-                # Double-check clothing compatibility
-                compatibility = self._check_clothing_compatibility(st.session_state.selected_items)
-                if not compatibility["valid"]:
-                    st.error("Cannot process: incompatible clothing combination")
-                    for conflict in compatibility["conflicts"]:
-                        st.error(f"- {conflict}")
-                    st.session_state.processing = False
-                    return
-                
-                # Create clothing items for VTON in the required format
-                clothing_items = []
-                for rec in selected_recommendations:
-                    clothing_items.append({
-                        "image": {
-                            "data": rec["image"]
-                        },
-                        "type": rec["type"],
-                        "context": {
-                            "brand": rec["metadata"]["brand"],
-                            "style": st.session_state.preferences["style"]
-                        }
-                    })
-                
-                # Prepare try-on request
-                request_data = {
-                    "user_photo": {
-                        "data": f"data:image/jpeg;base64,{st.session_state.user_image}"
-                    },
-                    "clothing_items": clothing_items,
-                    "scene_context": {
-                        "style": st.session_state.preferences["style"],
-                        "season": st.session_state.preferences["season"],
-                        "occasion": st.session_state.preferences["occasion"]
-                    }
-                }
-                
-                # Format for VTON API request:
-                # {
-                #   "user_photo": {                      # User photo to try clothes on
-                #     "data": "data:image/jpeg;base64,..." or "https://image-url..."  # Base64 image or URL
-                #   },
-                #   "clothing_items": [                  # List of 1-5 clothing items to try on
-                #     {
-                #       "image": {
-                #         "data": "https://image-url..." or "base64-data"  # Clothing image URL or base64
-                #       },
-                #       "type": "t_shirt",               # Type matching ClothingType enum
-                #       "context": {                     # Optional metadata used for processing
-                #         "brand": "Brand name",
-                #         "style": "casual"
-                #       }
-                #     }
-                #   ],
-                #   "scene_context": {                   # Optional scene context
-                #     "style": "casual",
-                #     "season": "summer",
-                #     "occasion": "everyday"
-                #   }
-                # }
-                
-                # Make API request to VTON endpoint
-                response = self._api_call("/vton", request_data)
-                
-                if response.get("success"):
-                    st.session_state.vton_results = response
-                    st.session_state.current_step = "results"  # Move to results step
-                    st.success("Try-on completed successfully!")
-                else:
-                    st.error(f"Error: {response.get('message', 'Unknown error')}")
-        except Exception as e:
-            st.error(f"Error: {str(e)}")
-        finally:
-            st.session_state.processing = False
-    
-    def _check_clothing_compatibility(self, selected_items):
-        """Check if the selected clothing items are compatible for VTON processing
-        
-        This implements client-side validation similar to what the backend does,
-        to prevent sending invalid combinations that would fail."""
-        clothing_types = [st.session_state.recommendations[i]["type"] for i in selected_items]
-        
-        # Check for direct conflicts based on common rules
-        conflicts = []
-        warnings = []
-        
-        # Check for multiple items of same type or category
-        top_types = ["shirt", "t_shirt", "blouse", "top", "tank_top", "crop_top"]
-        outerwear_types = ["jacket", "blazer", "coat", "cardigan", "sweater", "hoodie", "vest"]
-        bottom_types = ["pants", "jeans", "shorts", "skirt", "leggings"]
-        dress_types = ["dress", "maxi_dress", "mini_dress", "cocktail_dress"]
-        
-        # Count categories
-        tops = [t for t in clothing_types if t in top_types]
-        outerwear = [t for t in clothing_types if t in outerwear_types]
-        bottoms = [t for t in clothing_types if t in bottom_types]
-        dresses = [t for t in clothing_types if t in dress_types]
-        
-        # Check for conflicts
-        if len(dresses) > 0 and (len(tops) > 0 or len(bottoms) > 0):
-            conflicts.append("Cannot combine dresses with tops or bottoms")
-        
-        if len(dresses) > 1:
-            conflicts.append("Cannot use multiple dresses")
-        
-        if len(tops) > 1:
-            conflicts.append("Cannot use multiple tops (shirts, t-shirts, etc.)")
-        
-        if len(bottoms) > 1 and not ("leggings" in bottoms and len(bottoms) == 2):
-            warnings.append("Using multiple bottom garments may cause issues")
-        
-        # Return validation results
-        return {
-            "valid": len(conflicts) == 0,
-            "conflicts": conflicts,
-            "warnings": warnings
-        }
-    
-    def _api_call(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Make an API call to the backend service"""
-        url = f"{self.api_base_url}{endpoint}"
-        
-        try:
-            response = requests.post(
-                url,
-                json=data,
-                headers={"Content-Type": "application/json"},
-                timeout=120  # Extended timeout for VTON processing
-            )
-            
-            if response.status_code == 200:
-                return response.json()
+        for item in request.clothing_items:
+            node_id = masking_system.get_workflow_node(item.type)
+            if node_id == 84:
+                top_items.append(item)
+            elif node_id == 83:
+                bottom_items.append(item)
             else:
-                error_detail = "Unknown error"
-                try:
-                    error_response = response.json()
-                    error_detail = error_response.get("detail", str(error_response))
-                except:
-                    error_detail = response.text
-                
-                raise Exception(f"API Error ({response.status_code}): {error_detail}")
+                raise ValidationError(
+                    f"Invalid workflow node {node_id} for clothing type {item.type.value}",
+                    details={"clothing_type": item.type.value, "node_id": node_id}
+                )
         
-        except requests.RequestException as e:
-            logger.error(f"API Request Error: {e}")
-            raise Exception(f"API Connection Error: {e}")
+        # Validate that we don't have conflicting items in the same node
+        if len(top_items) > 1:
+            top_types = [item.type.value for item in top_items]
+            logger.warning(f"[{correlation_id}] Multiple top items provided: {top_types}. Using last item.")
+            top_items = [top_items[-1]]  # Use the last item if multiple
+            
+        if len(bottom_items) > 1:
+            bottom_types = [item.type.value for item in bottom_items]
+            logger.warning(f"[{correlation_id}] Multiple bottom items provided: {bottom_types}. Using last item.")
+            bottom_items = [bottom_items[-1]]  # Use the last item if multiple
+        
+        logger.info(f"[{correlation_id}] Grouped items: {len(top_items)} top, {len(bottom_items)} bottom")
+        
+        # Process top clothing item (node 84)
+        top_filename = None
+        top_mask_config = {}
+        if top_items:
+            top_item = top_items[0]
+            logger.info(f"[{correlation_id}] Processing top item: {top_item.type.value}")
+            top_image_bytes = await handle_image_input(session, top_item.image.data, correlation_id)
+            top_filename = await comfyui_client.upload_image(
+                top_image_bytes, 
+                f"top_{correlation_id}.jpg", 
+                correlation_id
+            )
+            # Generate mask configuration for top item
+            combined_context = {**(request.scene_context or {}), **(top_item.context or {})}
+            top_mask_config = masking_system.generate_mask_config(
+                top_item.type, 
+                combined_context, 
+                [top_item.type]
+            )
+            # Record masking information for top item
+            masking_applied.append({
+                "clothing_type": top_item.type.value,
+                "mask_config": {k: v for k, v in top_mask_config.items() if v},
+                "masks_enabled": sum(top_mask_config.values())
+            })
+        
+        # Process bottom clothing item (node 83)
+        bottom_filename = None
+        bottom_mask_config = {}
+        if bottom_items:
+            bottom_item = bottom_items[0]
+            logger.info(f"[{correlation_id}] Processing bottom item: {bottom_item.type.value}")
+            bottom_image_bytes = await handle_image_input(session, bottom_item.image.data, correlation_id)
+            bottom_filename = await comfyui_client.upload_image(
+                bottom_image_bytes, 
+                f"bottom_{correlation_id}.jpg", 
+                correlation_id
+            )
+            # Generate mask configuration for bottom item
+            combined_context = {**(request.scene_context or {}), **(bottom_item.context or {})}
+            bottom_mask_config = masking_system.generate_mask_config(
+                bottom_item.type, 
+                combined_context, 
+                [bottom_item.type]
+            )
+            # Record masking information for bottom item
+            masking_applied.append({
+                "clothing_type": bottom_item.type.value,
+                "mask_config": {k: v for k, v in bottom_mask_config.items() if v},
+                "masks_enabled": sum(bottom_mask_config.values())
+            })
+        
+        # Combine mask configurations
+        combined_mask_config = {**top_mask_config, **bottom_mask_config}
+        
+        # Create and execute workflow with all items
+        logger.info(f"[{correlation_id}] Creating workflow with combined items")
+        workflow = comfyui_client.update_workflow(
+            current_user_filename, 
+            top_filename, 
+            bottom_filename, 
+            combined_mask_config
+        )
+        
+        # Submit and process workflow
+        prompt_id = await comfyui_client.submit_workflow(workflow, correlation_id)
+        outputs = await comfyui_client.poll_workflow(prompt_id, correlation_id)
+        output_image_bytes = await comfyui_client.extract_image(outputs, correlation_id)
+        
+        # Try to upload to Supabase first, fallback to base64 if failed
+        final_image_url = None
+        final_image_base64 = None
+        
+        if storage.is_available():
+            try:
+                final_image_url = await storage.upload_image(output_image_bytes, correlation_id, "result")
+                logger.info(f"[{correlation_id}] Image uploaded to Supabase: {final_image_url}")
+            except Exception as e:
+                logger.error(f"[{correlation_id}] Failed to upload to Supabase: {e}")
+        
+        # If Supabase upload failed or is not available, use base64 as fallback
+        if not final_image_url:
+            final_image_base64 = base64.b64encode(output_image_bytes).decode("utf-8")
+            logger.info(f"[{correlation_id}] Using base64 fallback for image response")
+        
+        processing_time = time.time() - start_time
+        
+        logger.info(
+            f"[{correlation_id}] VTON completed successfully in {processing_time:.1f}s. "
+            f"Final image: {len(output_image_bytes)} bytes"
+        )
+        
+        return VTONResponse(
+            success=True,
+            final_image_url=final_image_url,
+            final_image=final_image_base64,
+            processing_time=processing_time,
+            clothing_analysis=clothing_analysis,
+            masking_applied=masking_applied,
+            debug_info={
+                "correlation_id": correlation_id,
+                "items_processed": len(request.clothing_items),
+                "final_image_size": len(output_image_bytes),
+                "cache_hits": get_cache_stats().get("entries", 0)
+            }
+        )
+        
+    except VTONException as e:
+        log_error(e, http_request, {"correlation_id": correlation_id})
+        raise HTTPException(
+            status_code=400 if isinstance(e, ValidationError) else 500,
+            detail=create_error_response(e, http_request)["error"]
+        )
+    except Exception as e:
+        vton_exc = VTONException(
+            f"Unexpected error during VTON processing: {str(e)}",
+            error_code="VTON_PROCESSING_ERROR",
+            correlation_id=correlation_id,
+            details={"original_error": str(e)}
+        )
+        log_error(vton_exc, http_request, {"correlation_id": correlation_id})
+        raise HTTPException(status_code=500, detail=create_error_response(vton_exc, http_request)["error"])
 
+@app.get("/health", response_model=HealthResponse)
+async def health_check():
+    """
+    Comprehensive health check endpoint.
+    
+    Returns service status, ComfyUI connectivity, cache statistics, and system information.
+    """
+    try:
+        # Test ComfyUI connectivity
+        session = await comfyui_client.get_session()
+        timeout = aiohttp.ClientTimeout(total=5)
+        
+        try:
+            async with session.get(f"{settings.comfyui_base_url}/", timeout=timeout) as response:
+                comfyui_status = response.status == 200
+        except Exception as e:
+            logger.warning(f"ComfyUI health check failed: {str(e)}")
+            comfyui_status = False
+        
+        # Get cache statistics
+        cache_stats = get_cache_stats()
+        
+        # Determine overall status
+        overall_status = "healthy" if comfyui_status else "degraded"
+        
+        return HealthResponse(
+            status=overall_status,
+            comfyui_connected=comfyui_status,
+            timestamp=time.time(),
+            cache_stats=cache_stats,
+            system_info={
+                "total_clothing_types": len(masking_system.get_supported_types()),
+                "max_clothing_items": 5,
+                "caching_enabled": settings.cache_enabled,
+                "storage_available": storage.is_available()
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Health check failed", "details": str(e)}
+        )
+
+@app.get("/clothing-types", response_model=ClothingTypesResponse)
+async def get_clothing_types():
+    """Get supported clothing types and categories."""
+    try:
+        supported_types = masking_system.get_supported_types()
+        categories = masking_system.get_categories()
+        
+        # Example requests
+        example_requests = {
+            "single_item": {
+                "description": "Try on a single clothing item",
+                "request": {
+                    "user_photo": {"data": "https://example.com/person.jpg"},
+                    "clothing_items": [
+                        {"image": {"data": "https://example.com/shirt.jpg"}, "type": "shirt"}
+                    ]
+                }
+            },
+            "jacket_over_shirt": {
+                "description": "Intelligent layering - jacket over shirt",
+                "request": {
+                    "user_photo": {"data": "https://example.com/person.jpg"},
+                    "clothing_items": [
+                        {"image": {"data": "https://example.com/shirt.jpg"}, "type": "shirt"},
+                        {"image": {"data": "https://example.com/jacket.jpg"}, "type": "jacket"}
+                    ],
+                    "scene_context": {"season": "winter", "style": "casual"}
+                }
+            },
+            "summer_outfit": {
+                "description": "Complete summer outfit with context",
+                "request": {
+                    "user_photo": {"data": "https://example.com/person.jpg"},
+                    "clothing_items": [
+                        {"image": {"data": "https://example.com/tank_top.jpg"}, "type": "tank_top"},
+                        {"image": {"data": "https://example.com/shorts.jpg"}, "type": "shorts"},
+                        {"image": {"data": "https://example.com/sneakers.jpg"}, "type": "sneakers"}
+                    ],
+                    "scene_context": {"season": "summer", "style": "casual", "occasion": "everyday"}
+                }
+            },
+            "formal_outfit": {
+                "description": "Formal business outfit",
+                "request": {
+                    "user_photo": {"data": "https://example.com/person.jpg"},
+                    "clothing_items": [
+                        {"image": {"data": "https://example.com/dress_shirt.jpg"}, "type": "shirt"},
+                        {"image": {"data": "https://example.com/blazer.jpg"}, "type": "blazer"},
+                        {"image": {"data": "https://example.com/dress_pants.jpg"}, "type": "pants"}
+                    ],
+                    "scene_context": {"style": "formal", "occasion": "work"}
+                }
+            }
+        }
+        
+        return ClothingTypesResponse(
+            total_supported_types=len(supported_types),
+            clothing_types=supported_types,
+            categories=categories,
+            example_requests=example_requests
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting clothing types: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Failed to get clothing types", "details": str(e)}
+        )
+
+
+@app.post("/cache/clear")
+async def clear_image_cache():
+    """
+    Clear the image cache.
+    
+    Useful for debugging or freeing memory. Returns cache statistics before and after clearing.
+    """
+    try:
+        stats_before = get_cache_stats()
+        clear_cache()
+        stats_after = get_cache_stats()
+        
+        return {
+            "success": True,
+            "message": "Image cache cleared successfully",
+            "stats_before": stats_before,
+            "stats_after": stats_after
+        }
+        
+    except Exception as e:
+        logger.error(f"Error clearing cache: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Failed to clear cache", "details": str(e)}
+        )
+
+@app.get("/cache/stats")
+async def get_image_cache_stats():
+    """Get detailed image cache statistics."""
+    try:
+        return {
+            "success": True,
+            "cache_stats": get_cache_stats(),
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        logger.error(f"Error getting cache stats: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Failed to get cache stats", "details": str(e)}
+        )
+
+@app.post("/recommend-and-tryon", response_model=RecommendationVTONResponse)
+async def recommend_and_tryon(request: RecommendationVTONRequest, http_request: Request):
+    """
+    Complete pipeline: User analysis → Recommendations → VTON processing.
+    
+    This endpoint combines intelligent clothing recommendations with virtual try-on:
+    1. Analyzes user uploaded image for style preferences
+    2. Generates personalized clothing recommendations
+    3. Processes VTON with recommended items
+    """
+    start_time = time.time()
+    correlation_id = str(uuid.uuid4())
+    
+    logger.info(f"[{correlation_id}] Starting recommendation + VTON pipeline")
+    
+    try:
+        # Step 1: Analyze user image
+        logger.info(f"[{correlation_id}] Step 1: Analyzing user image")
+        user_image_bytes = base64.b64decode(request.user_image)
+        user_analysis = user_analyzer.analyze_image(user_image_bytes)
+        
+        logger.info(f"[{correlation_id}] User analysis completed: {len(user_analysis['dominant_colors'])} colors detected")
+        
+        # Step 2: Generate recommendations
+        logger.info(f"[{correlation_id}] Step 2: Generating recommendations")
+        recommendation_request = RecommendationRequest(
+            user_analysis=user_analysis,
+            occasion=request.preferences.occasion or request.preferences.style,
+            max_items=request.max_recommendations,
+            price_range=(0, request.preferences.price_max) if request.preferences.price_max else None
+        )
+        
+        recommendations = recommendation_engine.get_recommendations(recommendation_request)
+        
+        if not recommendations:
+            raise ValidationError(
+                "No suitable recommendations found",
+                details={
+                    "user_preferences": request.preferences.dict(),
+                    "analysis_summary": {
+                        "colors": len(user_analysis.get("dominant_colors", [])),
+                        "style": user_analysis.get("style_indicators", {}),
+                        "season": user_analysis.get("season_compatibility", "unknown")
+                    }
+                },
+                correlation_id=correlation_id
+            )
+        
+        logger.info(f"[{correlation_id}] Generated {len(recommendations)} recommendations")
+        
+        # Convert recommendations to VTON-compatible format
+        recommendations_data = []
+        clothing_items_for_vton = []
+        
+        for rec in recommendations:
+            rec_data = {
+                "image": rec.item["image"],
+                "type": rec.item["type"],
+                "confidence": rec.compatibility_score,
+                "style_compatibility": rec.style_match_score,
+                "color_harmony": rec.color_match_score,
+                "metadata": {
+                    "brand": rec.item.get("brand", "Unknown"),
+                    "price": rec.item.get("price", 0),
+                    "product_link": rec.item.get("product_link", ""),
+                    "color": rec.item.get("color", "#808080"),
+                    "reasons": rec.reasons
+                }
+            }
+            recommendations_data.append(rec_data)
+            
+            # Prepare for VTON if enabled
+            if request.include_vton:
+                clothing_items_for_vton.append(ClothingItem(
+                    image=ImageInput(data=rec.item["image"]),
+                    type=ClothingType(rec.item["type"]),
+                    context={
+                        "brand": rec.item.get("brand", ""),
+                        "style": request.preferences.style
+                    }
+                ))
+        
+        # Step 3: Process VTON if requested
+        vton_result = None
+        if request.include_vton and clothing_items_for_vton:
+            logger.info(f"[{correlation_id}] Step 3: Processing VTON with {len(clothing_items_for_vton)} items")
+            
+            # Create scene context from preferences
+            scene_context = {
+                "season": request.preferences.season.lower(),
+                "style": request.preferences.style.lower(),
+                "occasion": request.preferences.occasion or "everyday"
+            }
+            
+            # Create VTON request
+            vton_request = VTONRequest(
+                user_photo=ImageInput(data=f"data:image/jpeg;base64,{request.user_image}"),
+                clothing_items=clothing_items_for_vton,
+                scene_context=scene_context
+            )
+            
+            # Process VTON (call the existing function directly)
+            try:
+                vton_response = await virtual_try_on(vton_request, http_request)
+                vton_result = vton_response.dict()
+                logger.info(f"[{correlation_id}] VTON processing successful")
+            except Exception as vton_error:
+                logger.error(f"[{correlation_id}] VTON processing failed: {vton_error}")
+                # Continue without VTON result - recommendations are still valuable
+                vton_result = {
+                    "success": False,
+                    "error": str(vton_error),
+                    "message": "Virtual try-on failed, but recommendations are available"
+                }
+        
+        processing_time = time.time() - start_time
+        
+        logger.info(
+            f"[{correlation_id}] Complete pipeline finished in {processing_time:.1f}s. "
+            f"Recommendations: {len(recommendations_data)}, VTON: {'success' if vton_result and vton_result.get('success') else 'skipped/failed'}"
+        )
+        
+        return RecommendationVTONResponse(
+            success=True,
+            recommendations=recommendations_data,
+            user_analysis=user_analysis,
+            vton_result=vton_result,
+            processing_time=processing_time,
+            correlation_id=correlation_id
+        )
+        
+    except VTONException as e:
+        log_error(e, http_request, {"correlation_id": correlation_id})
+        raise HTTPException(
+            status_code=400 if isinstance(e, ValidationError) else 500,
+            detail=create_error_response(e, http_request)["error"]
+        )
+    except Exception as e:
+        vton_exc = VTONException(
+            f"Unexpected error during recommendation + VTON pipeline: {str(e)}",
+            error_code="RECOMMENDATION_PIPELINE_ERROR",
+            correlation_id=correlation_id,
+            details={"original_error": str(e)}
+        )
+        log_error(vton_exc, http_request, {"correlation_id": correlation_id})
+        raise HTTPException(status_code=500, detail=create_error_response(vton_exc, http_request)["error"])
 
 if __name__ == "__main__":
-    # Display app information in sidebar
-    st.sidebar.title("AI Fashion Studio")
-    st.sidebar.info(
-        "This application lets you view personalized clothing recommendations "
-        "and try them on virtually using AI technology."
+    import uvicorn
+    uvicorn.run(
+        app, 
+        host=settings.api_host, 
+        port=settings.api_port, 
+        log_level=settings.log_level.lower(),
+        access_log=True
     )
-    
-    # Display workflow steps in sidebar
-    st.sidebar.subheader("Workflow")
-    st.sidebar.markdown(
-        "1. Upload your photo\n"
-        "2. Get clothing recommendations\n"
-        "3. Select items to try on\n"
-        "4. View try-on results"
-    )
-    
-    # Initialize and run the app
-    app = VTONFrontend()
-    app.run()
