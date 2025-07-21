@@ -13,10 +13,7 @@ from PIL import Image
 import io
 import logging
 from typing import Dict, List, Any, Optional
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
+import os
 
 # Configure logging
 logging.basicConfig(
@@ -150,15 +147,40 @@ class VTONFrontend:
     
     def __init__(self):
         """Initialize the application with configuration and session state"""
-        # API Configuration from environment variable
-        self.api_base_url = os.getenv("API_BASE_URL")
+        # API Configuration from Streamlit secrets
+        try:
+            self.api_base_url = st.secrets["default"]["API_BASE_URL"]
+            self.debug_mode = st.secrets["default"].get("DEBUG", "false").lower() == "true"
+            logger.info(f"Loaded API configuration: {self.api_base_url}")
+        except Exception as e:
+            # Set to None if secrets not available
+            self.api_base_url = None
+            self.debug_mode = False
+            logger.error(f"Failed to load API configuration from Streamlit secrets: {e}")
+            # Show a clear error message to the user about how to configure
+            st.error("""
+            ⚠️ **Configuration Error**: API URL not found in Streamlit secrets.
+            
+            Please set up your `.streamlit/secrets.toml` file with:
+            ```toml
+            [default]
+            API_BASE_URL = "https://your-backend-api-url"
+            ```
+            
+            Or add these secrets in the Streamlit Cloud dashboard if deploying.
+            """)
         
         # Show API connection status in sidebar
         api_status = self._check_api_connection()
         if api_status:
             st.sidebar.success(f"✅ Connected to API: {self.api_base_url}")
         else:
-            st.sidebar.error(f"❌ Cannot connect to API: {self.api_base_url}")
+            if self.api_base_url is None:
+                st.sidebar.error("❌ API URL not configured. Please set API_BASE_URL in Streamlit secrets.")
+                st.sidebar.info("See README.md for instructions on configuring secrets.")
+            else:
+                st.sidebar.error(f"❌ Cannot connect to API: {self.api_base_url}")
+                st.sidebar.info("Make sure the backend service is running and accessible.")
         
         # Initialize session state for storing uploaded images and results
         if "user_image" not in st.session_state:
@@ -695,7 +717,21 @@ class VTONFrontend:
                     </div>
                     """, unsafe_allow_html=True)
                     st.markdown("<h3 style='text-align: center;'>Processing your virtual try-on...</h3>", unsafe_allow_html=True)
-                    st.markdown("<p style='text-align: center;'>This may take several minutes. Please wait while we generate your outfits.</p>", unsafe_allow_html=True)
+                    st.markdown("<p style='text-align: center;'>This may take up to 9 minutes. Please don't close this window while we generate your outfits.</p>", unsafe_allow_html=True)
+                    
+                    # Add a countdown timer that updates
+                    countdown_placeholder = st.empty()
+                    start_time = time.time()
+                    
+                    def update_timer():
+                        elapsed = int(time.time() - start_time)
+                        remaining = max(0, 540 - elapsed)
+                        minutes = remaining // 60
+                        seconds = remaining % 60
+                        countdown_placeholder.markdown(f"<p style='text-align: center;'>Time remaining: {minutes}m {seconds}s</p>", unsafe_allow_html=True)
+                    
+                    # Initial timer display
+                    update_timer()
             
             # Get selected clothing items
             selected_recommendations = [
@@ -751,8 +787,12 @@ class VTONFrontend:
                 st.success("Try-on completed successfully!")
             else:
                 st.error(f"Error: {response.get('message', 'Unknown error')}")
+                if self.debug_mode:
+                    st.expander("Debug Info").json(response)
         except Exception as e:
             st.error(f"Error: {str(e)}")
+            if self.debug_mode:
+                st.exception(e)
         finally:
             st.session_state.processing = False
     
@@ -801,10 +841,15 @@ class VTONFrontend:
     
     def _check_api_connection(self):
         """Check if the API is reachable"""
+        # Return False immediately if api_base_url is None
+        if self.api_base_url is None:
+            return False
+            
         try:
+            # First try the /health endpoint if it exists
             response = requests.get(
                 f"{self.api_base_url}/health",
-                timeout=5
+                timeout=10  # Longer timeout for initial connection check
             )
             return response.status_code == 200
         except:
@@ -812,14 +857,28 @@ class VTONFrontend:
                 # Fall back to a simple HEAD request if /health doesn't exist
                 response = requests.head(
                     self.api_base_url,
-                    timeout=5
+                    timeout=10  # Longer timeout for initial connection check
                 )
                 return response.status_code < 400
             except:
-                return False
+                # If both methods fail, try one more approach for Lightning deployments
+                try:
+                    # Some Lightning.ai deployments might need a different check
+                    response = requests.options(
+                        self.api_base_url,
+                        timeout=10
+                    )
+                    return True  # If no exception, assume it's available
+                except:
+                    return False
                 
     def _api_call(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Make an API call to the backend service"""
+        # Check if API URL is configured
+        if self.api_base_url is None:
+            st.error("⚠️ API is not configured. Please set up API_BASE_URL in Streamlit secrets.")
+            raise ValueError("API_BASE_URL is not configured in Streamlit secrets")
+            
         url = f"{self.api_base_url}{endpoint}"
         progress_placeholder = st.empty()
         
@@ -829,16 +888,27 @@ class VTONFrontend:
             
             start_time = time.time()
             
+            # Log the request if in debug mode
+            if self.debug_mode:
+                logger.info(f"Making API request to {url}")
+                logger.info(f"Request data: {json.dumps(data, default=str)[:500]}...")
+            
+            # Make the API call with exactly 540 seconds timeout
             response = requests.post(
                 url,
                 json=data,
                 headers={"Content-Type": "application/json"},
-                timeout=440  
+                timeout=540  # 9 minutes exactly as requested
             )
             
             # Clear the progress indicator
             progress_placeholder.empty()
             
+            # Log the response if in debug mode
+            if self.debug_mode:
+                logger.info(f"API response status: {response.status_code}")
+                logger.info(f"API response time: {time.time() - start_time:.2f} seconds")
+                
             if response.status_code == 200:
                 return response.json()
             else:
@@ -849,12 +919,19 @@ class VTONFrontend:
                 except:
                     error_detail = response.text
                 
-                raise Exception(f"API Error ({response.status_code}): {error_detail}")
+                error_msg = f"API Error ({response.status_code}): {error_detail}"
+                logger.error(error_msg)
+                raise Exception(error_msg)
         
+        except requests.Timeout:
+            # Specific handling for timeout errors
+            logger.error(f"API request timed out after 540 seconds")
+            progress_placeholder.empty()
+            raise Exception("API request timed out. The server took too long to respond. Please try again later.")
+            
         except requests.RequestException as e:
             # Clear any progress indicators
-            if 'progress_placeholder' in locals():
-                progress_placeholder.empty()
+            progress_placeholder.empty()
             logger.error(f"API Request Error: {e}")
             raise Exception(f"API Connection Error: {e}")
 
@@ -876,6 +953,21 @@ if __name__ == "__main__":
         "4. View try-on results"
     )
     
-    # Initialize and run the app
-    app = VTONFrontend()
-    app.run()
+    try:
+        # Initialize and run the app
+        app = VTONFrontend()
+        app.run()
+    except ValueError as e:
+        if "API_BASE_URL is not configured" in str(e):
+            st.error("⚠️ Application cannot start: API configuration is missing.")
+            st.info("""
+            Please configure the app by setting up your Streamlit secrets.
+            
+            See the README.md file for instructions on how to set up the configuration.
+            """)
+        else:
+            st.error(f"Error initializing the application: {e}")
+            logger.exception("Application initialization error")
+    except Exception as e:
+        st.error(f"An unexpected error occurred: {e}")
+        logger.exception("Unexpected application error")
