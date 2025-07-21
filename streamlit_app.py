@@ -654,7 +654,17 @@ class VTONFrontend:
                         
                         with col2:
                             # Buy button if product link exists
+                            # Check both product_link and link fields in case the API sends either
                             product_link = item["metadata"].get("product_link", "")
+                            
+                            # If product_link is empty, try to check if we have "link" directly in the item
+                            if not product_link and "link" in item:
+                                product_link = item["link"]
+                            
+                            # Last resort: check if link is in the metadata
+                            if not product_link and "link" in item.get("metadata", {}):
+                                product_link = item["metadata"]["link"]
+                                
                             if product_link:
                                 st.markdown(
                                     f"<a href='{product_link}' target='_blank' class='buy-button'>Buy Now</a>",
@@ -917,6 +927,33 @@ if __name__ == "__main__":
         "3. Select items to try on\n"
         "4. View try-on results"
     )
+    
+    # Add a Debug section in the sidebar for admins/developers
+    with st.sidebar.expander("Debug Info", expanded=False):
+        st.write("API Response Structure")
+        if st.session_state.get("recommendations"):
+            # Show the first recommendation's structure to help diagnose issues
+            sample_rec = st.session_state.recommendations[0] if st.session_state.recommendations else {}
+            st.json(sample_rec)
+            
+            # Display specific product link fields
+            st.write("Product Link Check:")
+            if "metadata" in sample_rec and "product_link" in sample_rec["metadata"]:
+                st.write(f"metadata.product_link: {sample_rec['metadata']['product_link']}")
+            else:
+                st.write("metadata.product_link: Not found")
+                
+            if "link" in sample_rec:
+                st.write(f"link: {sample_rec['link']}")
+            else:
+                st.write("link: Not found")
+                
+            if "metadata" in sample_rec and "link" in sample_rec["metadata"]:
+                st.write(f"metadata.link: {sample_rec['metadata']['link']}")
+            else:
+                st.write("metadata.link: Not found")
+        else:
+            st.write("No recommendations available yet")
     
     try:
         # Initialize and run the app
