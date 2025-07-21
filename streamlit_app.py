@@ -39,6 +39,10 @@ st.markdown("""
         font-size: 2.5rem;
         text-align: center;
         margin-bottom: 1.5rem;
+        background: linear-gradient(135deg, #6a11cb 0%, #2575fc 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        padding: 1rem 0;
     }
     .recommendation-card {
         border: 1px solid #f0f0f0;
@@ -46,7 +50,12 @@ st.markdown("""
         padding: 1rem;
         margin-bottom: 1rem;
         background-color: #ffffff;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+    .recommendation-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 8px 16px rgba(0,0,0,0.15);
     }
     .buy-button {
         background-color: #4CAF50;
@@ -57,6 +66,10 @@ st.markdown("""
         display: inline-block;
         border-radius: 4px;
         margin-top: 10px;
+        transition: background-color 0.3s ease;
+    }
+    .buy-button:hover {
+        background-color: #45a049;
     }
     .sub-header {
         font-size: 1.75rem;
@@ -96,6 +109,39 @@ st.markdown("""
     .stProgress > div > div > div > div {
         background-color: #4CAF50;
     }
+    /* Additional styling for better UI */
+    .stButton>button {
+        border-radius: 20px;
+        font-weight: 600;
+        transition: all 0.3s ease;
+    }
+    .stButton>button:hover {
+        transform: scale(1.05);
+    }
+    .stCheckbox > label {
+        font-weight: 600;
+    }
+    /* Loading animation enhancements */
+    .stSpinner {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+    /* Section dividers */
+    hr {
+        border: 0;
+        height: 1px;
+        background-image: linear-gradient(to right, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0));
+        margin: 2rem 0;
+    }
+    /* Image container styling */
+    img {
+        border-radius: 8px;
+        transition: transform 0.3s ease;
+    }
+    img:hover {
+        transform: scale(1.02);
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -105,12 +151,14 @@ class VTONFrontend:
     def __init__(self):
         """Initialize the application with configuration and session state"""
         # API Configuration from environment variable
-        default_api_url = os.getenv("API_BASE_URL", "http://localhost:8000")
-        self.api_base_url = st.sidebar.text_input(
-            "API URL", 
-            value=default_api_url,
-            help="URL of the VTON API service"
-        )
+        self.api_base_url = os.getenv("API_BASE_URL", "http://localhost:8000")
+        
+        # Show API connection status in sidebar
+        api_status = self._check_api_connection()
+        if api_status:
+            st.sidebar.success(f"✅ Connected to API: {self.api_base_url}")
+        else:
+            st.sidebar.error(f"❌ Cannot connect to API: {self.api_base_url}")
         
         # Initialize session state for storing uploaded images and results
         if "user_image" not in st.session_state:
@@ -239,22 +287,12 @@ class VTONFrontend:
                 help="The occasion you're shopping for"
             )
         
-        max_price = st.slider(
-            "Maximum Price ($)",
-            min_value=50,
-            max_value=500,
-            value=200,
-            step=50,
-            help="Maximum price for recommended items"
-        )
-        
         # Store preferences in session state
         st.session_state.preferences = {
             "style": style,
             "gender": gender,
             "season": season,
-            "occasion": occasion,
-            "price_max": max_price
+            "occasion": occasion
         }
         
         # Number of recommendations
@@ -307,20 +345,30 @@ class VTONFrontend:
         
         st.subheader("Your Virtual Try-On Results")
         
-        # Display the selected items
+        # Display the selected items in a nice grid
         st.write("Items you tried on:")
-        selected_items_cols = st.columns(min(3, len(st.session_state.selected_items)))
+        num_selected = len(st.session_state.selected_items)
+        cols_per_row = min(3, num_selected)
         
-        for i, idx in enumerate(st.session_state.selected_items):
-            with selected_items_cols[i % len(selected_items_cols)]:
-                recommendation = st.session_state.recommendations[idx]
-                st.image(
-                    recommendation["image"],
-                    caption=f"{recommendation['type'].replace('_', ' ').title()}",
-                    use_container_width=True
-                )
+        if cols_per_row > 0:
+            selected_items_cols = st.columns(cols_per_row)
+            
+            for i, idx in enumerate(st.session_state.selected_items):
+                with selected_items_cols[i % cols_per_row]:
+                    recommendation = st.session_state.recommendations[idx]
+                    st.markdown(f"<div class='recommendation-card'>", unsafe_allow_html=True)
+                    st.image(
+                        recommendation["image"],
+                        caption=f"{recommendation['type'].replace('_', ' ').title()}",
+                        use_container_width=True
+                    )
+                    st.markdown(f"**Brand**: {recommendation['metadata']['brand']}")
+                    st.markdown("</div>", unsafe_allow_html=True)
         
-        # Display VTON results
+        # Add a separator
+        st.markdown("<hr>", unsafe_allow_html=True)
+        
+        # Display VTON results with nice styling
         st.subheader("Try-On Images")
         try_on_images = st.session_state.vton_results.get("try_on_images", [])
         if try_on_images:
@@ -329,6 +377,8 @@ class VTONFrontend:
             
             for i, image_data in enumerate(try_on_images):
                 with vton_cols[i % len(vton_cols)]:
+                    st.markdown(f"<div class='recommendation-card'>", unsafe_allow_html=True)
+                    
                     image_url = image_data.get("image_url")
                     image_data_b64 = image_data.get("image_data")
                     
@@ -348,6 +398,8 @@ class VTONFrontend:
                             caption=f"Try-On Result {i+1}",
                             use_container_width=True
                         )
+                    
+                    st.markdown("</div>", unsafe_allow_html=True)
         else:
             st.info("No try-on images were generated.")
             
@@ -358,13 +410,15 @@ class VTONFrontend:
             if "correlation_id" in st.session_state.vton_results:
                 st.write(f"Correlation ID: {st.session_state.vton_results['correlation_id']}")
             
-        # Start over button
-        if st.button("Start Over", type="primary"):
-            # Reset session state and go back to upload step
-            st.session_state.current_step = "upload"
-            st.session_state.selected_items = []
-            st.session_state.vton_results = None
-            st.rerun()
+        # Start over button with better styling
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            if st.button("Start Over", type="primary", use_container_width=True):
+                # Reset session state and go back to upload step
+                st.session_state.current_step = "upload"
+                st.session_state.selected_items = []
+                st.session_state.vton_results = None
+                st.rerun()
     
     def _get_recommendations(self):
         """Get recommendations from the API without try-on"""
@@ -375,52 +429,71 @@ class VTONFrontend:
         st.session_state.processing = True
         
         try:
-            with st.spinner("Analyzing your style and generating recommendations..."):
-                # Prepare the request data - without try-on
-                request_data = {
-                    "user_image": st.session_state.user_image,
-                    "preferences": st.session_state.preferences,
-                    "max_recommendations": st.session_state.max_recommendations,
-                    "include_vton": False  # Don't include try-on yet
-                }
+            # Create a container for the loading animation
+            progress_container = st.container()
+            with progress_container:
+                # Show a more visible loading animation
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col2:
+                    st.markdown("""
+                    <div style="display: flex; justify-content: center; margin: 2rem 0;">
+                        <div class="stSpinner">
+                            <div class="st-cw">
+                                <div class="st-cw-circle" style="width: 5rem; height: 5rem;"></div>
+                            </div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    st.markdown("<h3 style='text-align: center;'>Analyzing your style and generating recommendations...</h3>", unsafe_allow_html=True)
+                    st.markdown("<p style='text-align: center;'>This may take a minute. Please wait...</p>", unsafe_allow_html=True)
+            
+            # Prepare the request data - without try-on
+            request_data = {
+                "user_image": st.session_state.user_image,
+                "preferences": st.session_state.preferences,
+                "max_recommendations": st.session_state.max_recommendations,
+                "include_vton": False  # Don't include try-on yet
+            }
+            
+            # Make API request
+            response = self._api_call("/recommend-and-tryon", request_data)
+            
+            # Clear the loading animation
+            progress_container.empty()            
+            if response.get("success"):
+                st.session_state.recommendations = response.get("recommendations", [])
+                st.session_state.user_analysis = response.get("user_analysis", {})
                 
-                # Make API request
-                response = self._api_call("/recommend-and-tryon", request_data)
+                # Display user analysis summary
+                st.subheader("Your Style Analysis")
+                cols = st.columns(3)
                 
-                if response.get("success"):
-                    st.session_state.recommendations = response.get("recommendations", [])
-                    st.session_state.user_analysis = response.get("user_analysis", {})
-                    
-                    # Display user analysis summary
-                    st.subheader("Your Style Analysis")
-                    cols = st.columns(3)
-                    
-                    # Display dominant colors
-                    with cols[0]:
-                        if "dominant_colors" in st.session_state.user_analysis:
-                            st.write("**Your Color Palette:**")
-                            colors = st.session_state.user_analysis["dominant_colors"]
-                            color_html = '<div style="display: flex; flex-direction: row;">'
-                            for color in colors[:5]:  # Show up to 5 colors
-                                color_html += f'<div class="color-swatch" style="background-color: {color};"></div>'
-                            color_html += '</div>'
-                            st.markdown(color_html, unsafe_allow_html=True)
-                    
-                    # Display body shape
-                    with cols[1]:
-                        if "body_shape" in st.session_state.user_analysis:
-                            st.write(f"**Body Type:** {st.session_state.user_analysis['body_shape'].title()}")
-                    
-                    # Display season compatibility
-                    with cols[2]:
-                        if "season_compatibility" in st.session_state.user_analysis:
-                            st.write(f"**Season:** {st.session_state.user_analysis['season_compatibility'].title()}")
-                    
-                    st.session_state.current_step = "select"  # Move to selection step
-                    st.session_state.selected_items = []  # Clear any previous selections
-                    st.success("Recommendations generated successfully based on your style!")
-                else:
-                    st.error(f"Error: {response.get('message', 'Unknown error')}")
+                # Display dominant colors
+                with cols[0]:
+                    if "dominant_colors" in st.session_state.user_analysis:
+                        st.write("**Your Color Palette:**")
+                        colors = st.session_state.user_analysis["dominant_colors"]
+                        color_html = '<div style="display: flex; flex-direction: row;">'
+                        for color in colors[:5]:  # Show up to 5 colors
+                            color_html += f'<div class="color-swatch" style="background-color: {color};"></div>'
+                        color_html += '</div>'
+                        st.markdown(color_html, unsafe_allow_html=True)
+                
+                # Display body shape
+                with cols[1]:
+                    if "body_shape" in st.session_state.user_analysis:
+                        st.write(f"**Body Type:** {st.session_state.user_analysis['body_shape'].title()}")
+                
+                # Display season compatibility
+                with cols[2]:
+                    if "season_compatibility" in st.session_state.user_analysis:
+                        st.write(f"**Season:** {st.session_state.user_analysis['season_compatibility'].title()}")
+                
+                st.session_state.current_step = "select"  # Move to selection step
+                st.session_state.selected_items = []  # Clear any previous selections
+                st.success("Recommendations generated successfully based on your style!")
+            else:
+                st.error(f"Error: {response.get('message', 'Unknown error')}")
         except Exception as e:
             st.error(f"Error: {str(e)}")
         finally:
@@ -430,14 +503,17 @@ class VTONFrontend:
         """Render the recommendations and let user select items to try on"""
         st.subheader("Your Personalized Recommendations")
         st.write("Our AI has analyzed your photo and style preferences to recommend these items.")
-        st.write("Select one or more items below that you'd like to try on:")
+        st.write("Select items below that you'd like to try on:")
         
         if not st.session_state.recommendations:
             st.info("No recommendations available. Please go back and get recommendations first.")
             return
         
-        # Group recommendations by clothing type
-        clothing_categories = {
+        # Show all recommendations in a grid layout
+        all_recommendations = st.session_state.recommendations
+        
+        # Group by clothing type for better organization
+        clothing_types = {
             "tops": ["shirt", "t_shirt", "blouse", "top", "tank_top", "crop_top"],
             "outerwear": ["jacket", "blazer", "coat", "cardigan", "sweater", "hoodie", "vest"],
             "bottoms": ["pants", "jeans", "shorts", "skirt", "leggings"],
@@ -446,82 +522,116 @@ class VTONFrontend:
             "accessories": ["hat", "bag", "belt", "scarf", "watch", "gloves"]
         }
         
-        grouped_recommendations = {}
-        for category, types in clothing_categories.items():
-            grouped_recommendations[category] = []
-            for i, rec in enumerate(st.session_state.recommendations):
-                if rec["type"] in types:
-                    grouped_recommendations[category].append((i, rec))
+        # Create a separator between clothing categories
+        st.markdown("<hr style='margin: 1rem 0;'>", unsafe_allow_html=True)
         
-        # Display recommendations by category with tabs
-        categories_with_items = [cat for cat, items in grouped_recommendations.items() if items]
-        if categories_with_items:
-            tabs = st.tabs(categories_with_items)
+        # Display all recommendations in a grid
+        num_items = len(all_recommendations)
+        
+        # Initialize selected_items if empty and there are recommendations
+        if not st.session_state.selected_items and num_items > 0:
+            # Auto-select up to 3 items (tops, bottoms, outerwear in that order)
+            tops = [i for i, r in enumerate(all_recommendations) if r["type"] in clothing_types["tops"]]
+            bottoms = [i for i, r in enumerate(all_recommendations) if r["type"] in clothing_types["bottoms"]]
+            outerwear = [i for i, r in enumerate(all_recommendations) if r["type"] in clothing_types["outerwear"]]
+            dresses = [i for i, r in enumerate(all_recommendations) if r["type"] in clothing_types["dresses"]]
             
-            for i, category in enumerate(categories_with_items):
-                with tabs[i]:
-                    items = grouped_recommendations[category]
-                    
-                    # Create columns for items in this category
-                    num_cols = min(3, len(items))
-                    if num_cols > 0:
-                        cols = st.columns(num_cols)
-                        
-                        for j, (index, recommendation) in enumerate(items):
-                            with cols[j % num_cols]:
-                                st.markdown(f"<div class='recommendation-card'>", unsafe_allow_html=True)
-                                
-                                # Display clothing image
-                                st.image(
-                                    recommendation["image"],
-                                    caption=f"{recommendation['type'].replace('_', ' ').title()}",
-                                    use_container_width=True
-                                )
-                                
-                                # Show match score with progress bar
-                                confidence = int(recommendation["confidence"] * 100)
-                                st.progress(recommendation["confidence"], text=f"Match: {confidence}%")
-                                
-                                # Checkbox for selection
-                                item_key = f"item_{index}"
-                                if st.checkbox("Select for try-on", key=item_key):
-                                    if index not in st.session_state.selected_items:
-                                        st.session_state.selected_items.append(index)
-                                else:
-                                    if index in st.session_state.selected_items:
-                                        st.session_state.selected_items.remove(index)
-                                
-                                # Display recommendation details
-                                st.markdown(f"**Brand**: {recommendation['metadata']['brand']}")
-                                
-                                if "price" in recommendation["metadata"] and recommendation["metadata"]["price"] > 0:
-                                    st.markdown(f"**Price**: ${recommendation['metadata']['price']:.2f}")
-                                
-                                # Display reasons for recommendation
-                                if "reasons" in recommendation["metadata"] and recommendation["metadata"]["reasons"]:
-                                    with st.expander("Why This Item?"):
-                                        for reason in recommendation["metadata"]["reasons"]:
-                                            st.markdown(f"• {reason}")
-                                
-                                # Buy button
-                                if "product_link" in recommendation["metadata"] and recommendation["metadata"]["product_link"]:
-                                    st.markdown(
-                                        f"<a href='{recommendation['metadata']['product_link']}' target='_blank' class='buy-button'>Buy Now</a>",
-                                        unsafe_allow_html=True
-                                    )
-                                
-                                st.markdown("</div>", unsafe_allow_html=True)
-        else:
-            st.warning("No recommendations found in any category.")
+            # Try to get a balanced outfit selection
+            if dresses:
+                # If we have a dress, select that and maybe an outerwear piece
+                st.session_state.selected_items = [dresses[0]]
+                if outerwear:
+                    st.session_state.selected_items.append(outerwear[0])
+            else:
+                # Otherwise try for a top + bottom + outerwear
+                if tops:
+                    st.session_state.selected_items.append(tops[0])
+                if bottoms:
+                    st.session_state.selected_items.append(bottoms[0])
+                if outerwear and len(st.session_state.selected_items) < 3:
+                    st.session_state.selected_items.append(outerwear[0])
+            
+            # Ensure we don't have more than 3 selected
+            st.session_state.selected_items = st.session_state.selected_items[:3]
         
-        # Display selection summary
+        # Create columns based on number of items (max 3 per row)
+        cols_per_row = min(3, num_items)
+        
+        # Show each clothing category that has items
+        for category_name, category_types in clothing_types.items():
+            # Get items in this category
+            category_items = [(i, rec) for i, rec in enumerate(all_recommendations) 
+                              if rec["type"] in category_types]
+            
+            if category_items:
+                st.subheader(f"{category_name.title()}")
+                
+                # Create a row of items
+                cols = st.columns(min(3, len(category_items)))
+                
+                for idx, (item_idx, item) in enumerate(category_items):
+                    with cols[idx % len(cols)]:
+                        st.markdown(f"<div class='recommendation-card'>", unsafe_allow_html=True)
+                        
+                        # Display clothing image
+                        st.image(
+                            item["image"],
+                            caption=f"{item['type'].replace('_', ' ').title()}",
+                            use_container_width=True
+                        )
+                        
+                        # Show match score with progress bar
+                        confidence = int(item["confidence"] * 100)
+                        st.progress(item["confidence"], text=f"Match: {confidence}%")
+                        
+                        # Brand and metadata
+                        st.markdown(f"**Brand**: {item['metadata']['brand']}")
+                        if "price" in item["metadata"] and item["metadata"]["price"] > 0:
+                            st.markdown(f"**Price**: ${item['metadata']['price']:.2f}")
+                        
+                        # Selection and Buy buttons in same row
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            # Checkbox for selection with key based on item index
+                            is_selected = item_idx in st.session_state.selected_items
+                            if st.checkbox("Select", value=is_selected, key=f"select_{item_idx}"):
+                                if item_idx not in st.session_state.selected_items:
+                                    st.session_state.selected_items.append(item_idx)
+                            else:
+                                if item_idx in st.session_state.selected_items:
+                                    st.session_state.selected_items.remove(item_idx)
+                        
+                        with col2:
+                            # Buy button if product link exists
+                            if "product_link" in item["metadata"] and item["metadata"]["product_link"]:
+                                st.markdown(
+                                    f"<a href='{item['metadata']['product_link']}' target='_blank' class='buy-button'>Buy</a>",
+                                    unsafe_allow_html=True
+                                )
+                        
+                        st.markdown("</div>", unsafe_allow_html=True)
+                
+                # Add spacing between categories
+                st.markdown("<br>", unsafe_allow_html=True)
+        
+        # Display selection summary in a fixed section at the bottom
+        st.markdown("<div style='position: sticky; bottom: 0; background: white; padding: 1rem; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
+        
+        # Selection summary
         st.subheader("Your Selection")
         if st.session_state.selected_items:
             # Check clothing compatibility
             compatibility = self._check_clothing_compatibility(st.session_state.selected_items)
             
             # Show selected items count
-            st.success(f"You've selected {len(st.session_state.selected_items)} item(s) for try-on")
+            selected_count = len(st.session_state.selected_items)
+            selected_items_text = "item" if selected_count == 1 else "items"
+            st.success(f"You've selected {selected_count} {selected_items_text} for try-on")
+            
+            # Show what's selected
+            selected_types = [all_recommendations[i]["type"].replace("_", " ").title() 
+                             for i in st.session_state.selected_items]
+            st.write(f"Selected: {', '.join(selected_types)}")
             
             # Show compatibility warnings or conflicts
             if not compatibility["valid"]:
@@ -536,7 +646,9 @@ class VTONFrontend:
         else:
             st.warning("Please select at least one item to try on")
         
-        # Add help section for valid combinations
+        st.markdown("</div>", unsafe_allow_html=True)
+        
+        # Add help section for valid combinations as an expander
         with st.expander("Help: Valid clothing combinations"):
             st.markdown("""
             ### Valid clothing combinations:
@@ -567,81 +679,78 @@ class VTONFrontend:
         st.session_state.processing = True
         
         try:
-            with st.spinner("Processing try-on... This may take a minute..."):
-                # Get selected clothing items
-                selected_recommendations = [
-                    st.session_state.recommendations[i] for i in st.session_state.selected_items
-                ]
-                
-                # Double-check clothing compatibility
-                compatibility = self._check_clothing_compatibility(st.session_state.selected_items)
-                if not compatibility["valid"]:
-                    st.error("Cannot process: incompatible clothing combination")
-                    for conflict in compatibility["conflicts"]:
-                        st.error(f"- {conflict}")
-                    st.session_state.processing = False
-                    return
-                
-                # Create clothing items for VTON in the required format
-                clothing_items = []
-                for rec in selected_recommendations:
-                    clothing_items.append({
-                        "image": {
-                            "data": rec["image"]
-                        },
-                        "type": rec["type"],
-                        "context": {
-                            "brand": rec["metadata"]["brand"],
-                            "style": st.session_state.preferences["style"]
-                        }
-                    })
-                
-                # Prepare try-on request
-                request_data = {
-                    "user_photo": {
-                        "data": f"data:image/jpeg;base64,{st.session_state.user_image}"
+            # Create a container for the loading animation
+            progress_container = st.container()
+            with progress_container:
+                # Show a more visible loading animation
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col2:
+                    st.markdown("""
+                    <div style="display: flex; justify-content: center; margin: 2rem 0;">
+                        <div class="stSpinner">
+                            <div class="st-cw">
+                                <div class="st-cw-circle" style="width: 5rem; height: 5rem;"></div>
+                            </div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    st.markdown("<h3 style='text-align: center;'>Processing your virtual try-on...</h3>", unsafe_allow_html=True)
+                    st.markdown("<p style='text-align: center;'>This may take several minutes. Please wait while we generate your outfits.</p>", unsafe_allow_html=True)
+            
+            # Get selected clothing items
+            selected_recommendations = [
+                st.session_state.recommendations[i] for i in st.session_state.selected_items
+            ]
+            
+            # Double-check clothing compatibility
+            compatibility = self._check_clothing_compatibility(st.session_state.selected_items)
+            if not compatibility["valid"]:
+                progress_container.empty()  # Clear the loading animation
+                st.error("Cannot process: incompatible clothing combination")
+                for conflict in compatibility["conflicts"]:
+                    st.error(f"- {conflict}")
+                st.session_state.processing = False
+                return
+            
+            # Create clothing items for VTON in the required format
+            clothing_items = []
+            for rec in selected_recommendations:
+                clothing_items.append({
+                    "image": {
+                        "data": rec["image"]
                     },
-                    "clothing_items": clothing_items,
-                    "scene_context": {
-                        "style": st.session_state.preferences["style"],
-                        "season": st.session_state.preferences["season"],
-                        "occasion": st.session_state.preferences["occasion"]
+                    "type": rec["type"],
+                    "context": {
+                        "brand": rec["metadata"]["brand"],
+                        "style": st.session_state.preferences["style"]
                     }
+                })
+            
+            # Prepare try-on request
+            request_data = {
+                "user_photo": {
+                    "data": f"data:image/jpeg;base64,{st.session_state.user_image}"
+                },
+                "clothing_items": clothing_items,
+                "scene_context": {
+                    "style": st.session_state.preferences["style"],
+                    "season": st.session_state.preferences["season"],
+                    "occasion": st.session_state.preferences["occasion"]
                 }
-                
-                # Format for VTON API request:
-                # {
-                #   "user_photo": {                      # User photo to try clothes on
-                #     "data": "data:image/jpeg;base64,..." or "https://image-url..."  # Base64 image or URL
-                #   },
-                #   "clothing_items": [                  # List of 1-5 clothing items to try on
-                #     {
-                #       "image": {
-                #         "data": "https://image-url..." or "base64-data"  # Clothing image URL or base64
-                #       },
-                #       "type": "t_shirt",               # Type matching ClothingType enum
-                #       "context": {                     # Optional metadata used for processing
-                #         "brand": "Brand name",
-                #         "style": "casual"
-                #       }
-                #     }
-                #   ],
-                #   "scene_context": {                   # Optional scene context
-                #     "style": "casual",
-                #     "season": "summer",
-                #     "occasion": "everyday"
-                #   }
-                # }
-                
-                # Make API request to VTON endpoint
-                response = self._api_call("/vton", request_data)
-                
-                if response.get("success"):
-                    st.session_state.vton_results = response
-                    st.session_state.current_step = "results"  # Move to results step
-                    st.success("Try-on completed successfully!")
-                else:
-                    st.error(f"Error: {response.get('message', 'Unknown error')}")
+            }
+            
+            # Make API request to VTON endpoint
+            response = self._api_call("/vton", request_data)
+            
+            # Clear the loading animation
+            progress_container.empty()
+            
+            if response.get("success"):
+                st.session_state.vton_results = response
+                st.session_state.current_step = "results"  # Move to results step
+                st.success("Try-on completed successfully!")
+            else:
+                st.error(f"Error: {response.get('message', 'Unknown error')}")
         except Exception as e:
             st.error(f"Error: {str(e)}")
         finally:
@@ -690,17 +799,45 @@ class VTONFrontend:
             "warnings": warnings
         }
     
+    def _check_api_connection(self):
+        """Check if the API is reachable"""
+        try:
+            response = requests.get(
+                f"{self.api_base_url}/health",
+                timeout=5
+            )
+            return response.status_code == 200
+        except:
+            try:
+                # Fall back to a simple HEAD request if /health doesn't exist
+                response = requests.head(
+                    self.api_base_url,
+                    timeout=5
+                )
+                return response.status_code < 400
+            except:
+                return False
+                
     def _api_call(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Make an API call to the backend service"""
         url = f"{self.api_base_url}{endpoint}"
+        progress_placeholder = st.empty()
         
         try:
+            # Show loading indicator while waiting for API response
+            progress_bar = progress_placeholder.progress(0, "Connecting to API...")
+            
+            start_time = time.time()
+            
             response = requests.post(
                 url,
                 json=data,
                 headers={"Content-Type": "application/json"},
-                timeout=120  # Extended timeout for VTON processing
+                timeout=440  
             )
+            
+            # Clear the progress indicator
+            progress_placeholder.empty()
             
             if response.status_code == 200:
                 return response.json()
@@ -715,6 +852,9 @@ class VTONFrontend:
                 raise Exception(f"API Error ({response.status_code}): {error_detail}")
         
         except requests.RequestException as e:
+            # Clear any progress indicators
+            if 'progress_placeholder' in locals():
+                progress_placeholder.empty()
             logger.error(f"API Request Error: {e}")
             raise Exception(f"API Connection Error: {e}")
 
