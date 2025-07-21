@@ -182,6 +182,8 @@ class VTONFrontend:
             st.session_state.selected_items = []
         if "current_step" not in st.session_state:
             st.session_state.current_step = "upload"
+        if "button_clicked" not in st.session_state:
+            st.session_state.button_clicked = False
     
     def run(self):
         """Run the main application"""
@@ -204,10 +206,22 @@ class VTONFrontend:
             
             # Process button to get recommendations
             button_disabled = st.session_state.processing or st.session_state.user_image is None
-            rec_button = st.button("Get Recommendations", type="primary", disabled=button_disabled)
             
-            if rec_button:
+            def on_recommend_click():
+                st.session_state.button_clicked = True
+                st.session_state.processing = True
+            
+            st.button(
+                "Get Recommendations", 
+                type="primary", 
+                disabled=button_disabled,
+                on_click=on_recommend_click
+            )
+            
+            # Process recommendations when button is clicked
+            if st.session_state.button_clicked and st.session_state.processing:
                 self._get_recommendations()
+                st.session_state.button_clicked = False  # Reset for next time
                 
         elif st.session_state.current_step == "select":
             # Display recommendations and let user select items
@@ -216,8 +230,9 @@ class VTONFrontend:
             # Try-on button
             col1, col2 = st.columns([1, 1])
             with col1:
-                if st.button("← Back", type="secondary"):
+                if st.button("← Back", type="secondary", key="back_to_upload"):
                     st.session_state.current_step = "upload"
+                    st.session_state.processing = False
                     st.rerun()
             
             with col2:
@@ -225,17 +240,32 @@ class VTONFrontend:
                 disable_tryon = not st.session_state.selected_items or (
                     st.session_state.selected_items and 
                     not self._check_clothing_compatibility(st.session_state.selected_items)["valid"]
+                ) or st.session_state.processing
+                
+                def on_tryon_click():
+                    st.session_state.button_clicked = True
+                    st.session_state.processing = True
+                
+                st.button(
+                    "Try On Selected Items", 
+                    type="primary", 
+                    disabled=disable_tryon,
+                    on_click=on_tryon_click
                 )
-                if st.button("Try On Selected Items", type="primary", disabled=disable_tryon):
+                
+                # Process try-on when button is clicked
+                if st.session_state.button_clicked and st.session_state.processing and st.session_state.current_step == "select":
                     self._process_tryon()
+                    st.session_state.button_clicked = False  # Reset for next time
         
         elif st.session_state.current_step == "results":
             # Display try-on results
             self._render_results_section()
             
             # Back button
-            if st.button("← Back to Selection", type="secondary"):
+            if st.button("← Back to Selection", type="secondary", key="back_to_selection"):
                 st.session_state.current_step = "select"
+                # Don't clear vton_results so user can navigate back and forth
                 st.rerun()
     
     def _render_upload_section(self):
@@ -464,25 +494,25 @@ class VTONFrontend:
         # Start over button with better styling
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
-            if st.button("Start Over", type="primary", use_container_width=True):
+            if st.button("Start Over", type="primary", use_container_width=True, key="start_over"):
                 # Reset session state and go back to upload step
                 st.session_state.current_step = "upload"
                 st.session_state.selected_items = []
                 st.session_state.vton_results = None
+                st.session_state.processing = False
                 st.rerun()
     
     def _get_recommendations(self):
         """Get recommendations from the API without try-on"""
         if not st.session_state.user_image:
             st.error("Please upload an image first")
+            st.session_state.processing = False
             return
-        
-        st.session_state.processing = True
         
         try:
             # Create a container for the loading animation
-            progress_container = st.container()
-            with progress_container:
+            progress_container = st.empty()
+            with progress_container.container():
                 # Show a more visible loading animation
                 col1, col2, col3 = st.columns([1, 2, 1])
                 with col2:
@@ -510,7 +540,8 @@ class VTONFrontend:
             response = self._api_call("/recommend-and-tryon", request_data)
             
             # Clear the loading animation
-            progress_container.empty()            
+            progress_container.empty()
+            
             if response.get("success"):
                 st.session_state.recommendations = response.get("recommendations", [])
                 st.session_state.user_analysis = response.get("user_analysis", {})
@@ -523,9 +554,9 @@ class VTONFrontend:
                 st.rerun()
             else:
                 st.error(f"Error: {response.get('message', 'Unknown error')}")
+                st.session_state.processing = False
         except Exception as e:
             st.error(f"Error: {str(e)}")
-        finally:
             st.session_state.processing = False
     
     def _render_recommendation_selection(self):
@@ -746,12 +777,16 @@ class VTONFrontend:
     
     def _process_tryon(self):
         """Process the try-on request with only the selected items"""
-        st.session_state.processing = True
-        
+        if not st.session_state.selected_items:
+            st.error("Please select at least one item to try on")
+            st.session_state.processing = False
+            return
+            
         try:
             # Create a container for the loading animation
-            progress_container = st.container()
-            with progress_container:
+            progress_container = st.empty()
+            countdown_placeholder = st.empty()
+            with progress_container.container():
                 # Show a more visible loading animation
                 col1, col2, col3 = st.columns([1, 2, 1])
                 with col2:
@@ -765,21 +800,10 @@ class VTONFrontend:
                     </div>
                     """, unsafe_allow_html=True)
                     st.markdown("<h3 style='text-align: center;'>Processing your virtual try-on...</h3>", unsafe_allow_html=True)
-                    st.markdown("<p style='text-align: center;'>This may take up to 9 minutes. Please don't close this window while we generate your outfits.</p>", unsafe_allow_html=True)
-                    
-                    # Add a countdown timer that updates
-                    countdown_placeholder = st.empty()
-                    start_time = time.time()
-                    
-                    def update_timer():
-                        elapsed = int(time.time() - start_time)
-                        remaining = max(0, 540 - elapsed)
-                        minutes = remaining // 60
-                        seconds = remaining % 60
-                        countdown_placeholder.markdown(f"<p style='text-align: center;'>Time remaining: {minutes}m {seconds}s</p>", unsafe_allow_html=True)
-                    
-                    # Initial timer display
-                    update_timer()
+                    st.markdown("<p style='text-align: center;'>This may take up to 9 minutes. Please don't close this window.</p>", unsafe_allow_html=True)
+            
+            # Display initial countdown
+            countdown_placeholder.markdown("<p style='text-align: center;'>Time remaining: 9m 0s</p>", unsafe_allow_html=True)
             
             # Get selected clothing items
             selected_recommendations = [
@@ -790,6 +814,7 @@ class VTONFrontend:
             compatibility = self._check_clothing_compatibility(st.session_state.selected_items)
             if not compatibility["valid"]:
                 progress_container.empty()  # Clear the loading animation
+                countdown_placeholder.empty()
                 st.error("Cannot process: incompatible clothing combination")
                 for conflict in compatibility["conflicts"]:
                     st.error(f"- {conflict}")
@@ -828,6 +853,7 @@ class VTONFrontend:
             
             # Clear the loading animation
             progress_container.empty()
+            countdown_placeholder.empty()
             
             if response.get("success"):
                 st.session_state.vton_results = response
@@ -835,9 +861,9 @@ class VTONFrontend:
                 st.rerun()
             else:
                 st.error(f"Error: {response.get('message', 'Unknown error')}")
+                st.session_state.processing = False
         except Exception as e:
             st.error(f"Error: {str(e)}")
-        finally:
             st.session_state.processing = False
     
     def _check_clothing_compatibility(self, selected_items):
@@ -886,6 +912,9 @@ class VTONFrontend:
         url = f"{self.api_base_url}{endpoint}"
         
         try:
+            # Add a small delay to allow the UI to update before making the API call
+            time.sleep(0.1)
+            
             response = requests.post(
                 url,
                 json=data,
@@ -905,9 +934,13 @@ class VTONFrontend:
                 raise Exception(error_msg)
         
         except requests.Timeout:
-            raise Exception("API request timed out. Please try again.")
+            raise Exception("API request timed out after 9 minutes. Please try again with a smaller request.")
+        except requests.ConnectionError:
+            raise Exception("Could not connect to the API server. Please check your internet connection.")
         except requests.RequestException as e:
             raise Exception(f"API Connection Error: {e}")
+        except Exception as e:
+            raise Exception(f"Unexpected error: {str(e)}")
 
 
 if __name__ == "__main__":
