@@ -7,7 +7,6 @@ import streamlit as st
 import requests
 import base64
 import time
-import os
 from PIL import Image
 import io
 import logging
@@ -149,59 +148,29 @@ class VTONFrontend:
     
     def __init__(self):
         """Initialize the application with configuration and session state"""
-        # API Configuration from Streamlit secrets or from environment variables as fallback
+        # Simple API Configuration
+        self.api_base_url = st.secrets.get("API_BASE_URL", "http://localhost:8000")
+        self.debug_mode = st.secrets.get("DEBUG", "false").lower() == "true"
+        
+        # Ensure URL has proper protocol
+        if not self.api_base_url.startswith(("http://", "https://")):
+            self.api_base_url = f"https://{self.api_base_url}"
+        
+        # Remove trailing slash
+        if self.api_base_url.endswith("/"):
+            self.api_base_url = self.api_base_url[:-1]
+        
+        # Simple API status check
         try:
-            self.api_base_url = st.secrets.get("API_BASE_URL") or os.environ.get("API_BASE_URL")
-            self.debug_mode = st.secrets.get("DEBUG", "false").lower() == "true" or os.environ.get("DEBUG", "false").lower() == "true"
-            
-            if not self.api_base_url:
-                # For local development - fallback to localhost if no config
-                self.api_base_url = "http://localhost:8000"
-                logger.info(f"No API URL configured, using default: {self.api_base_url}")
+            response = requests.get(f"{self.api_base_url}/health", timeout=5)
+            if response.status_code == 200:
+                st.sidebar.success(f"✅ API Connected: {self.api_base_url}")
             else:
-                # Ensure URL has proper protocol
-                if not (self.api_base_url.startswith("http://") or self.api_base_url.startswith("https://")):
-                    # If no protocol, assume https
-                    self.api_base_url = f"https://{self.api_base_url}"
-                    logger.info(f"Added https:// protocol to API URL: {self.api_base_url}")
-                
-                # Remove trailing slash if present
-                if self.api_base_url.endswith("/"):
-                    self.api_base_url = self.api_base_url[:-1]
-                    
-                logger.info(f"Using API URL: {self.api_base_url}")
-        except Exception as e:
-            # Set to localhost if secrets not available
-            self.api_base_url = "http://localhost:8000"
-            self.debug_mode = False
-            logger.error(f"Failed to load API configuration, using default: {e}")
-            st.warning("""
-            ⚠️ **Configuration Notice**: Using default API URL. 
-            
-            For production deployment, please set up your `.streamlit/secrets.toml` file with:
-            ```toml
-            API_BASE_URL = "https://your-backend-api-url"
-            ```
-            """)
+                st.sidebar.warning(f"⚠️ API Issue: {self.api_base_url}")
+        except Exception:
+            st.sidebar.error(f"❌ API Offline: {self.api_base_url}")
         
-        # Check health endpoint
-        api_health = self._check_api_health()
-        if api_health.get("status") == "healthy":
-            st.sidebar.success(f"✅ Connected to API: {self.api_base_url}")
-            # Show additional API info
-            with st.sidebar.expander("API Details"):
-                st.write(f"Status: {api_health.get('status', 'unknown')}")
-                st.write(f"ComfyUI Connected: {api_health.get('comfyui_connected', False)}")
-                st.write(f"Cache Entries: {api_health.get('cache_stats', {}).get('entries', 0)}")
-        else:
-            if self.api_base_url is None:
-                st.sidebar.error("❌ API URL not configured. Please set API_BASE_URL in Streamlit secrets.")
-            else:
-                st.sidebar.error(f"❌ Cannot connect to API: {self.api_base_url}")
-                if api_health.get("error"):
-                    st.sidebar.error(f"Error: {api_health.get('error')}")
-        
-        # Initialize session state for storing uploaded images and results
+        # Initialize session state
         if "user_image" not in st.session_state:
             st.session_state.user_image = None
         if "recommendations" not in st.session_state:
@@ -213,7 +182,7 @@ class VTONFrontend:
         if "selected_items" not in st.session_state:
             st.session_state.selected_items = []
         if "current_step" not in st.session_state:
-            st.session_state.current_step = "upload"  # Options: "upload", "select", "results"
+            st.session_state.current_step = "upload"
     
     def run(self):
         """Run the main application"""
@@ -421,38 +390,71 @@ class VTONFrontend:
         
         # Display VTON results with nice styling
         st.subheader("Try-On Images")
-        try_on_images = st.session_state.vton_results.get("try_on_images", [])
-        if try_on_images:
-            # Display try-on images in a grid
-            vton_cols = st.columns(min(2, len(try_on_images)))
+        
+        # Check if we have final image from VTON response
+        final_image_url = st.session_state.vton_results.get("final_image_url")
+        final_image_base64 = st.session_state.vton_results.get("final_image")
+        
+        if final_image_url:
+            st.markdown("<div class='recommendation-card'>", unsafe_allow_html=True)
+            st.image(
+                final_image_url,
+                caption="Your Virtual Try-On Result",
+                use_container_width=True
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+        elif final_image_base64:
+            st.markdown("<div class='recommendation-card'>", unsafe_allow_html=True)
+            # Handle base64 image
+            if final_image_base64.startswith("data:image"):
+                # Remove data URL prefix if present
+                final_image_base64 = final_image_base64.split(',')[1]
             
-            for i, image_data in enumerate(try_on_images):
-                with vton_cols[i % len(vton_cols)]:
-                    st.markdown("<div class='recommendation-card'>", unsafe_allow_html=True)
-                    
-                    image_url = image_data.get("image_url")
-                    image_data_b64 = image_data.get("image_data")
-                    
-                    if image_url:
-                        st.image(
-                            image_url,
-                            caption=f"Try-On Result {i+1}",
-                            use_container_width=True
-                        )
-                    elif image_data_b64:
-                        if image_data_b64.startswith("data:image"):
-                            # Remove data URL prefix
-                            image_data_b64 = image_data_b64.split(',')[1]
-                        
-                        st.image(
-                            io.BytesIO(base64.b64decode(image_data_b64)),
-                            caption=f"Try-On Result {i+1}",
-                            use_container_width=True
-                        )
-                    
-                    st.markdown("</div>", unsafe_allow_html=True)
+            st.image(
+                io.BytesIO(base64.b64decode(final_image_base64)),
+                caption="Your Virtual Try-On Result",
+                use_container_width=True
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
         else:
-            st.info("No try-on images were generated.")
+            # Fallback: check for try_on_images array (legacy format)
+            try_on_images = st.session_state.vton_results.get("try_on_images", [])
+            if try_on_images:
+                # Display try-on images in a grid
+                vton_cols = st.columns(min(2, len(try_on_images)))
+                
+                for i, image_data in enumerate(try_on_images):
+                    with vton_cols[i % len(vton_cols)]:
+                        st.markdown("<div class='recommendation-card'>", unsafe_allow_html=True)
+                        
+                        image_url = image_data.get("image_url")
+                        image_data_b64 = image_data.get("image_data")
+                        
+                        if image_url:
+                            st.image(
+                                image_url,
+                                caption=f"Try-On Result {i+1}",
+                                use_container_width=True
+                            )
+                        elif image_data_b64:
+                            if image_data_b64.startswith("data:image"):
+                                # Remove data URL prefix
+                                image_data_b64 = image_data_b64.split(',')[1]
+                            
+                            st.image(
+                                io.BytesIO(base64.b64decode(image_data_b64)),
+                                caption=f"Try-On Result {i+1}",
+                                use_container_width=True
+                            )
+                        
+                        st.markdown("</div>", unsafe_allow_html=True)
+            else:
+                st.info("No try-on images were generated. The API may not have completed the try-on process.")
+                
+                # Show debug info if available
+                if self.debug_mode:
+                    st.write("**VTON Results Debug:**")
+                    st.json(st.session_state.vton_results)
             
         # Display any additional processing information
         with st.expander("Processing Details"):
@@ -581,32 +583,24 @@ class VTONFrontend:
         
         # Initialize selected_items if empty and there are recommendations
         if not st.session_state.selected_items and num_items > 0:
-            # Auto-select up to 3 items (tops, bottoms, outerwear in that order)
+            # Auto-select up to 2 compatible items for a quick start
             tops = [i for i, r in enumerate(all_recommendations) if r["type"] in clothing_types["tops"]]
             bottoms = [i for i, r in enumerate(all_recommendations) if r["type"] in clothing_types["bottoms"]]
-            outerwear = [i for i, r in enumerate(all_recommendations) if r["type"] in clothing_types["outerwear"]]
             dresses = [i for i, r in enumerate(all_recommendations) if r["type"] in clothing_types["dresses"]]
             
             # Try to get a balanced outfit selection
             if dresses:
-                # If we have a dress, select that and maybe an outerwear piece
+                # If we have a dress, select that
                 st.session_state.selected_items = [dresses[0]]
-                if outerwear:
-                    st.session_state.selected_items.append(outerwear[0])
-            else:
-                # Otherwise try for a top + bottom + outerwear
-                if tops:
-                    st.session_state.selected_items.append(tops[0])
-                if bottoms:
-                    st.session_state.selected_items.append(bottoms[0])
-                if outerwear and len(st.session_state.selected_items) < 3:
-                    st.session_state.selected_items.append(outerwear[0])
-            
-            # Ensure we don't have more than 3 selected
-            st.session_state.selected_items = st.session_state.selected_items[:3]
-        
-        # Create columns based on number of items (max 3 per row)
-        cols_per_row = min(3, num_items)
+            elif tops and bottoms:
+                # Select a top and bottom combination
+                st.session_state.selected_items = [tops[0], bottoms[0]]
+            elif tops:
+                # Just select a top if that's all we have
+                st.session_state.selected_items = [tops[0]]
+            elif bottoms:
+                # Just select bottoms if that's all we have
+                st.session_state.selected_items = [bottoms[0]]
         
         # Show each clothing category that has items
         for category_name, category_types in clothing_types.items():
@@ -850,7 +844,6 @@ class VTONFrontend:
         
         # Check for multiple items of same type or category
         top_types = ["shirt", "t_shirt", "blouse", "top", "tank_top", "crop_top"]
-        outerwear_types = ["jacket", "blazer", "coat", "cardigan", "sweater", "hoodie", "vest"]
         bottom_types = ["pants", "jeans", "shorts", "skirt", "leggings"]
         dress_types = ["dress", "maxi_dress", "mini_dress", "cocktail_dress"]
         
@@ -858,8 +851,6 @@ class VTONFrontend:
         tops = [t for t in clothing_types if t in top_types]
         bottoms = [t for t in clothing_types if t in bottom_types]
         dresses = [t for t in clothing_types if t in dress_types]
-        
-        # Note: outerwear check remains available in warnings logic if needed
         
         # Check for conflicts
         if len(dresses) > 0 and (len(tops) > 0 or len(bottoms) > 0):
@@ -881,126 +872,32 @@ class VTONFrontend:
             "warnings": warnings
         }
     
-    def _check_api_health(self) -> Dict[str, Any]:
-        """Check API health endpoint and return status information."""
-        # Return error information if api_base_url is None
-        if self.api_base_url is None:
-            return {"status": "error", "error": "API URL not configured"}
-            
-        try:
-            # Try to access the health endpoint
-            health_url = f"{self.api_base_url}/health"
-            logger.info(f"Checking API health at: {health_url}")
-            
-            response = requests.get(
-                health_url,
-                timeout=5
-            )
-            
-            if response.status_code == 200:
-                logger.info("Health check successful")
-                return response.json()
-            else:
-                error_msg = f"API returned status code: {response.status_code}"
-                logger.error(f"Health check failed: {error_msg}")
-                return {
-                    "status": "error", 
-                    "error": error_msg
-                }
-        except requests.RequestException as e:
-            logger.error(f"Health check request failed: {e}")
-            
-            # Try alternative endpoint structure (without /health)
-            try:
-                response = requests.head(
-                    self.api_base_url,
-                    timeout=5
-                )
-                if response.status_code < 400:
-                    logger.info("Base URL check successful")
-                    return {
-                        "status": "degraded",
-                        "message": "API is reachable but health endpoint not available",
-                        "comfyui_connected": False,
-                        "cache_stats": {"entries": 0}
-                    }
-            except Exception as alt_error:
-                logger.error(f"Alternative health check also failed: {alt_error}")
-                
-            return {"status": "error", "error": str(e)}
-    
-    def _check_api_connection(self):
-        """Check if the API is reachable - LEGACY METHOD"""
-        # Return False immediately if api_base_url is None
-        if self.api_base_url is None:
-            return False
-            
-        try:
-            # Try a simple HEAD request
-            response = requests.head(
-                self.api_base_url,
-                timeout=10
-            )
-            return response.status_code < 400
-        except Exception as e:
-            logger.warning(f"API connection check failed: {e}")
-            return False
-                
     def _api_call(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Make an API call to the backend service"""
-        # Check if API URL is configured
-        if self.api_base_url is None:
-            st.error("⚠️ API is not configured. Please set up API_BASE_URL in Streamlit secrets.")
-            raise ValueError("API_BASE_URL is not configured in Streamlit secrets")
-            
         url = f"{self.api_base_url}{endpoint}"
-        logger.info(f"Making API call to: {url}")
-        progress_placeholder = st.empty()
         
         try:
-            # Show loading indicator while waiting for API response
-            progress_placeholder.progress(0, "Connecting to API...")
-            
-            # Make the API call with 540 seconds timeout
             response = requests.post(
                 url,
                 json=data,
                 headers={"Content-Type": "application/json"},
-                timeout=540  # 9 minutes timeout
+                timeout=540
             )
             
-            # Clear the progress indicator
-            progress_placeholder.empty()
-                
             if response.status_code == 200:
-                logger.info(f"API call to {endpoint} successful")
                 return response.json()
             else:
-                error_detail = "Unknown error"
+                error_msg = f"API Error ({response.status_code})"
                 try:
-                    error_response = response.json()
-                    error_detail = error_response.get("detail", str(error_response))
-                except Exception as json_error:
-                    logger.error(f"Error parsing API error response: {json_error}")
-                    error_detail = response.text
-                
-                error_msg = f"API Error ({response.status_code}): {error_detail}"
-                logger.error(error_msg)
-                
-                # Show detailed error information in debug mode
-                if self.debug_mode:
-                    logger.debug(f"Full response: {response.text}")
-                    
+                    error_detail = response.json().get("detail", response.text)
+                    error_msg += f": {error_detail}"
+                except Exception:
+                    error_msg += f": {response.text}"
                 raise Exception(error_msg)
         
         except requests.Timeout:
-            # Specific handling for timeout errors
-            progress_placeholder.empty()
-            raise Exception("API request timed out. The server took too long to respond. Please try again later.")
-            
+            raise Exception("API request timed out. Please try again.")
         except requests.RequestException as e:
-            # Clear any progress indicators
-            progress_placeholder.empty()
             raise Exception(f"API Connection Error: {e}")
 
 
