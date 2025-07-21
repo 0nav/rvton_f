@@ -218,10 +218,7 @@ class VTONFrontend:
             
             with col2:
                 # Only enable button if there are selected items and they're compatible
-                disable_tryon = not st.session_state.selected_items or (
-                    st.session_state.selected_items and 
-                    not self._check_clothing_compatibility(st.session_state.selected_items)["valid"]
-                )
+                disable_tryon = not st.session_state.selected_items
                 if st.button("Try On Selected Items", type="primary", disabled=disable_tryon):
                     self._process_tryon()
         
@@ -518,179 +515,38 @@ class VTONFrontend:
             st.session_state.processing = False
     
     def _render_recommendation_selection(self):
-        """Render the recommendations and let user select items to try on"""
         st.subheader("Your Personalized Recommendations")
-        st.write("Our AI has analyzed your photo and style preferences to recommend these items.")
         st.write("Select items below that you'd like to try on:")
-        
         if not st.session_state.recommendations:
             st.info("No recommendations available. Please go back and get recommendations first.")
             return
-        
-        # Show all recommendations in a grid layout
         all_recommendations = st.session_state.recommendations
-        
-        # Group by clothing type for better organization
-        clothing_types = {
-            "tops": ["shirt", "t_shirt", "blouse", "top", "tank_top", "crop_top"],
-            "outerwear": ["jacket", "blazer", "coat", "cardigan", "sweater", "hoodie", "vest"],
-            "bottoms": ["pants", "jeans", "shorts", "skirt", "leggings"],
-            "dresses": ["dress", "maxi_dress", "mini_dress", "cocktail_dress"],
-            "footwear": ["shoes", "sneakers", "boots", "heels"],
-            "accessories": ["hat", "bag", "belt", "scarf", "watch", "gloves"]
-        }
-        
-        # Create a separator between clothing categories
-        st.markdown("<hr style='margin: 1rem 0;'>", unsafe_allow_html=True)
-        
-        # Display all recommendations in a grid
-        num_items = len(all_recommendations)
-        
-        # Initialize selected_items if empty and there are recommendations
-        if not st.session_state.selected_items and num_items > 0:
-            # Auto-select up to 3 items (tops, bottoms, outerwear in that order)
-            tops = [i for i, r in enumerate(all_recommendations) if r["type"] in clothing_types["tops"]]
-            bottoms = [i for i, r in enumerate(all_recommendations) if r["type"] in clothing_types["bottoms"]]
-            outerwear = [i for i, r in enumerate(all_recommendations) if r["type"] in clothing_types["outerwear"]]
-            dresses = [i for i, r in enumerate(all_recommendations) if r["type"] in clothing_types["dresses"]]
-            
-            # Try to get a balanced outfit selection
-            if dresses:
-                # If we have a dress, select that and maybe an outerwear piece
-                st.session_state.selected_items = [dresses[0]]
-                if outerwear:
-                    st.session_state.selected_items.append(outerwear[0])
-            else:
-                # Otherwise try for a top + bottom + outerwear
-                if tops:
-                    st.session_state.selected_items.append(tops[0])
-                if bottoms:
-                    st.session_state.selected_items.append(bottoms[0])
-                if outerwear and len(st.session_state.selected_items) < 3:
-                    st.session_state.selected_items.append(outerwear[0])
-            
-            # Ensure we don't have more than 3 selected
-            st.session_state.selected_items = st.session_state.selected_items[:3]
-        
-        # Create columns based on number of items (max 3 per row)
-        cols_per_row = min(3, num_items)
-        
-        # Show each clothing category that has items
-        for category_name, category_types in clothing_types.items():
-            # Get items in this category
-            category_items = [(i, rec) for i, rec in enumerate(all_recommendations) 
-                              if rec["type"] in category_types]
-            
-            if category_items:
-                st.subheader(f"{category_name.title()}")
-                
-                # Create a row of items
-                cols = st.columns(min(3, len(category_items)))
-                
-                for idx, (item_idx, item) in enumerate(category_items):
-                    with cols[idx % len(cols)]:
-                        st.markdown(f"<div class='recommendation-card'>", unsafe_allow_html=True)
-                        
-                        # Display clothing image
-                        st.image(
-                            item["image"],
-                            caption=f"{item['type'].replace('_', ' ').title()}",
-                            use_container_width=True
-                        )
-                        
-                        # Show match score with progress bar
-                        confidence = int(item["confidence"] * 100)
-                        st.progress(item["confidence"], text=f"Match: {confidence}%")
-                        
-                        # Brand and metadata
-                        st.markdown(f"**Brand**: {item['metadata']['brand']}")
-                        if "price" in item["metadata"] and item["metadata"]["price"] > 0:
-                            st.markdown(f"**Price**: ${item['metadata']['price']:.2f}")
-                        
-                        # Selection and Buy buttons in same row
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            # Checkbox for selection with key based on item index
-                            is_selected = item_idx in st.session_state.selected_items
-                            if st.checkbox("Select", value=is_selected, key=f"select_{item_idx}"):
-                                if item_idx not in st.session_state.selected_items:
-                                    st.session_state.selected_items.append(item_idx)
-                            else:
-                                if item_idx in st.session_state.selected_items:
-                                    st.session_state.selected_items.remove(item_idx)
-                        
-                        with col2:
-                            # Buy button if product link exists
-                            if "product_link" in item["metadata"] and item["metadata"]["product_link"]:
-                                st.markdown(
-                                    f"<a href='{item['metadata']['product_link']}' target='_blank' class='buy-button'>Buy</a>",
-                                    unsafe_allow_html=True
-                                )
-                        
-                        st.markdown("</div>", unsafe_allow_html=True)
-                
-                # Add spacing between categories
-                st.markdown("<br>", unsafe_allow_html=True)
-        
-        # Display selection summary in a fixed section at the bottom
-        st.markdown("<div style='position: sticky; bottom: 0; background: white; padding: 1rem; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
-        
-        # Selection summary
+        cols_per_row = min(3, len(all_recommendations))
+        cols = st.columns(cols_per_row)
+        for idx, item in enumerate(all_recommendations):
+            with cols[idx % cols_per_row]:
+                st.markdown("<div class='recommendation-card'>", unsafe_allow_html=True)
+                st.image(item["image"], caption=item.get("type", ""), use_container_width=True)
+                st.markdown(f"**Brand**: {item.get('brand', '')}")
+                if "metadata" in item and "product_link" in item["metadata"] and item["metadata"]["product_link"]:
+                    st.markdown(
+                        f"<a href='{item['metadata']['product_link']}' target='_blank' class='buy-button'>Buy</a>",
+                        unsafe_allow_html=True
+                    )
+                is_selected = idx in st.session_state.selected_items
+                if st.checkbox("Select", value=is_selected, key=f"select_{idx}"):
+                    if idx not in st.session_state.selected_items:
+                        st.session_state.selected_items.append(idx)
+                else:
+                    if idx in st.session_state.selected_items:
+                        st.session_state.selected_items.remove(idx)
+                st.markdown("</div>", unsafe_allow_html=True)
         st.subheader("Your Selection")
         if st.session_state.selected_items:
-            # Check clothing compatibility
-            compatibility = self._check_clothing_compatibility(st.session_state.selected_items)
-            
-            # Show selected items count
-            selected_count = len(st.session_state.selected_items)
-            selected_items_text = "item" if selected_count == 1 else "items"
-            st.success(f"You've selected {selected_count} {selected_items_text} for try-on")
-            
-            # Show what's selected
-            selected_types = [all_recommendations[i]["type"].replace("_", " ").title() 
-                             for i in st.session_state.selected_items]
-            st.write(f"Selected: {', '.join(selected_types)}")
-            
-            # Show compatibility warnings or conflicts
-            if not compatibility["valid"]:
-                st.error("⚠️ Incompatible combination detected:")
-                for conflict in compatibility["conflicts"]:
-                    st.error(f"- {conflict}")
-                st.warning("Please adjust your selection to continue.")
-            elif compatibility["warnings"]:
-                st.warning("⚠️ Potential issues with this combination:")
-                for warning in compatibility["warnings"]:
-                    st.warning(f"- {warning}")
+            selected_types = [all_recommendations[i]["type"] for i in st.session_state.selected_items]
+            st.success(f"You've selected {len(st.session_state.selected_items)} item(s): {', '.join(selected_types)}")
         else:
             st.warning("Please select at least one item to try on")
-        
-        st.markdown("</div>", unsafe_allow_html=True)
-        
-        # Add help section for valid combinations as an expander
-        with st.expander("Help: Valid clothing combinations"):
-            st.markdown("""
-            ### Valid clothing combinations:
-            
-            ✅ **Single Items:**
-            - One top (shirt, t-shirt, blouse, etc.)
-            - One bottom (pants, jeans, shorts, skirt)
-            - One dress
-            - One outerwear piece (jacket, coat, etc.)
-            
-            ✅ **Valid Combinations:**
-            - Top + Bottom (e.g., shirt + pants)
-            - Top + Bottom + Outerwear (e.g., t-shirt + jeans + jacket)
-            - Dress + Outerwear (e.g., dress + cardigan)
-            - Bottom + Leggings (specific combination allowed)
-            
-            ❌ **Invalid Combinations:**
-            - Multiple tops (e.g., shirt + t-shirt)
-            - Multiple bottoms (except with leggings)
-            - Multiple dresses
-            - Dress + Top or Dress + Bottom
-            
-            For best results, choose 1-3 compatible items.
-            """)
     
     def _process_tryon(self):
         """Process the try-on request with only the selected items"""
@@ -733,16 +589,6 @@ class VTONFrontend:
             selected_recommendations = [
                 st.session_state.recommendations[i] for i in st.session_state.selected_items
             ]
-            
-            # Double-check clothing compatibility
-            compatibility = self._check_clothing_compatibility(st.session_state.selected_items)
-            if not compatibility["valid"]:
-                progress_container.empty()  # Clear the loading animation
-                st.error("Cannot process: incompatible clothing combination")
-                for conflict in compatibility["conflicts"]:
-                    st.error(f"- {conflict}")
-                st.session_state.processing = False
-                return
             
             # Create clothing items for VTON in the required format
             clothing_items = []
@@ -791,49 +637,6 @@ class VTONFrontend:
                 st.exception(e)
         finally:
             st.session_state.processing = False
-    
-    def _check_clothing_compatibility(self, selected_items):
-        """Check if the selected clothing items are compatible for VTON processing
-        
-        This implements client-side validation similar to what the backend does,
-        to prevent sending invalid combinations that would fail."""
-        clothing_types = [st.session_state.recommendations[i]["type"] for i in selected_items]
-        
-        # Check for direct conflicts based on common rules
-        conflicts = []
-        warnings = []
-        
-        # Check for multiple items of same type or category
-        top_types = ["shirt", "t_shirt", "blouse", "top", "tank_top", "crop_top"]
-        outerwear_types = ["jacket", "blazer", "coat", "cardigan", "sweater", "hoodie", "vest"]
-        bottom_types = ["pants", "jeans", "shorts", "skirt", "leggings"]
-        dress_types = ["dress", "maxi_dress", "mini_dress", "cocktail_dress"]
-        
-        # Count categories
-        tops = [t for t in clothing_types if t in top_types]
-        outerwear = [t for t in clothing_types if t in outerwear_types]
-        bottoms = [t for t in clothing_types if t in bottom_types]
-        dresses = [t for t in clothing_types if t in dress_types]
-        
-        # Check for conflicts
-        if len(dresses) > 0 and (len(tops) > 0 or len(bottoms) > 0):
-            conflicts.append("Cannot combine dresses with tops or bottoms")
-        
-        if len(dresses) > 1:
-            conflicts.append("Cannot use multiple dresses")
-        
-        if len(tops) > 1:
-            conflicts.append("Cannot use multiple tops (shirts, t-shirts, etc.)")
-        
-        if len(bottoms) > 1 and not ("leggings" in bottoms and len(bottoms) == 2):
-            warnings.append("Using multiple bottom garments may cause issues")
-        
-        # Return validation results
-        return {
-            "valid": len(conflicts) == 0,
-            "conflicts": conflicts,
-            "warnings": warnings
-        }
     
     def _check_api_connection(self):
         """Check if the API is reachable"""
