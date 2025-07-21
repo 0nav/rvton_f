@@ -151,7 +151,7 @@ class VTONFrontend:
     def __init__(self):
         """Initialize the application with configuration and session state"""
         # API Configuration from environment variable
-        self.api_base_url = os.getenv("API_BASE_URL", "http://localhost:8000")
+        self.api_base_url = os.getenv("API_BASE_URL")
         
         # Show API connection status in sidebar
         api_status = self._check_api_connection()
