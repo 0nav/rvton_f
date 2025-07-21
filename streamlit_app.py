@@ -121,9 +121,13 @@ class SimpleVTONApp:
                         type="primary"):
                 if st.session_state.user_image:
                     st.session_state.processing = True
-                    self.process_recommendations_and_tryon(gender, style, season, occasion)
+                    # Don't call st.rerun() here - let the processing happen first
                 else:
                     st.error("Please upload an image first!")
+            
+            # Process when processing state is True
+            if st.session_state.processing and st.session_state.user_image:
+                self.process_recommendations_and_tryon(gender, style, season, occasion)
         
         # Show results if available
         if st.session_state.results:
@@ -135,9 +139,6 @@ class SimpleVTONApp:
             st.error("Please upload an image first!")
             st.session_state.processing = False
             return
-        
-        # Immediately rerun to update the UI with processing state
-        st.rerun()
         
         # Create progress container
         with st.container():
@@ -189,7 +190,7 @@ class SimpleVTONApp:
                 st.error(f"❌ Error: {str(e)}")
             finally:
                 st.session_state.processing = False
-                # Force rerun to update button state
+                # Rerun to update button state and show results
                 st.rerun()
     
     def show_results(self):
