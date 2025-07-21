@@ -352,7 +352,7 @@ class VTONFrontend:
             "Number of Recommendations",
             min_value=1,
             max_value=10,
-            value=5,
+            value=3,
             help="How many recommendations would you like to see"
         )
     
@@ -688,18 +688,10 @@ class VTONFrontend:
                         
                         with col2:
                             # Buy button if product link exists
-                            # Check both product_link and link fields in case the API sends either
-                            product_link = item["metadata"].get("product_link", "")
+                            # Check multiple possible fields for product links
+                            product_link = self._extract_product_link(item)
                             
-                            # If product_link is empty, try to check if we have "link" directly in the item
-                            if not product_link and "link" in item:
-                                product_link = item["link"]
-                            
-                            # Last resort: check if link is in the metadata
-                            if not product_link and "link" in item.get("metadata", {}):
-                                product_link = item["metadata"]["link"]
-                                
-                            if product_link:
+                            if product_link and product_link.strip():
                                 st.markdown(
                                     f"<a href='{product_link}' target='_blank' class='buy-button'>Buy Now</a>",
                                     unsafe_allow_html=True
@@ -941,6 +933,47 @@ class VTONFrontend:
             raise Exception(f"API Connection Error: {e}")
         except Exception as e:
             raise Exception(f"Unexpected error: {str(e)}")
+    
+    def _extract_product_link(self, item: Dict[str, Any]) -> str:
+        """Extract product link from recommendation item, handling various formats"""
+        # Initialize to empty string
+        product_link = ""
+        
+        # Check in metadata.product_link (API standard)
+        if "metadata" in item and "product_link" in item["metadata"]:
+            product_link = item["metadata"]["product_link"]
+            logger.debug(f"Found product link in metadata.product_link: {product_link}")
+        
+        # If not found, check for metadata.link (alternative)
+        if not product_link and "metadata" in item and "link" in item["metadata"]:
+            product_link = item["metadata"]["link"]
+            logger.debug(f"Found product link in metadata.link: {product_link}")
+            
+        # If still not found, check for direct link property (from DB)
+        if not product_link and "link" in item:
+            product_link = item["link"]
+            logger.debug(f"Found product link in direct link property: {product_link}")
+            
+        # Last resort: check for url fields
+        if not product_link and "url" in item:
+            product_link = item["url"]
+            logger.debug(f"Found product link in url field: {product_link}")
+        if not product_link and "metadata" in item and "url" in item["metadata"]:
+            product_link = item["metadata"]["url"]
+            logger.debug(f"Found product link in metadata.url: {product_link}")
+            
+        # If found, validate that it's a proper URL
+        if product_link:
+            # Basic URL validation
+            if not product_link.startswith(("http://", "https://")):
+                logger.warning(f"Invalid product link format: {product_link}")
+                return ""
+            
+            logger.info(f"Successfully extracted product link: {product_link}")
+        else:
+            logger.warning("No product link found in item")
+                
+        return product_link
 
 
 if __name__ == "__main__":
