@@ -67,6 +67,8 @@ class SimpleVTONApp:
             st.session_state.processing = False
         if "results" not in st.session_state:
             st.session_state.results = None
+        if "button_clicked" not in st.session_state:
+            st.session_state.button_clicked = False
     
     def run(self):
         # Header
@@ -114,11 +116,19 @@ class SimpleVTONApp:
             # Process button
             process_disabled = st.session_state.processing or st.session_state.user_image is None
             
-            if st.button("🪄 Get Recommendations & Try-On", disabled=process_disabled, type="primary"):
-                if st.session_state.user_image:
-                    self.process_recommendations_and_tryon(gender, style, season, occasion)
-                else:
-                    st.error("Please upload an image first!")
+            def on_process_click():
+                st.session_state.button_clicked = True
+                st.session_state.processing = True
+            
+            st.button("🪄 Get Recommendations & Try-On", 
+                     disabled=process_disabled, 
+                     type="primary", 
+                     on_click=on_process_click)
+            
+            # Process when button is clicked
+            if st.session_state.button_clicked and st.session_state.processing:
+                self.process_recommendations_and_tryon(gender, style, season, occasion)
+                st.session_state.button_clicked = False  # Reset for next time
         
         # Show results if available
         if st.session_state.results:
@@ -126,19 +136,22 @@ class SimpleVTONApp:
     
     def process_recommendations_and_tryon(self, gender, style, season, occasion):
         """Process recommendations and try-on in one go"""
-        st.session_state.processing = True
+        if not st.session_state.user_image:
+            st.error("Please upload an image first!")
+            st.session_state.processing = False
+            return
         
         # Create progress container
         progress_container = st.empty()
         with progress_container.container():
-            st.info("🔄 Processing your request... This may take a few minutes...")
+            st.info("🔄 Processing your request... This may take several minutes...")
             progress_bar = st.progress(0)
             status_text = st.empty()
             
             try:
                 # Step 1: Get recommendations + try-on
                 status_text.text("Step 1/3: Analyzing your photo and style...")
-                progress_bar.progress(33)
+                progress_bar.progress(25)
                 
                 request_data = {
                     "user_image": st.session_state.user_image,
@@ -153,21 +166,24 @@ class SimpleVTONApp:
                 }
                 
                 status_text.text("Step 2/3: Getting personalized recommendations...")
-                progress_bar.progress(66)
+                progress_bar.progress(50)
                 
                 # Make API call
                 response = self.api_call("/recommend-and-tryon", request_data)
                 
-                status_text.text("Step 3/3: Generating virtual try-on results...")
-                progress_bar.progress(100)
+                status_text.text("Step 3/3: Processing virtual try-on results...")
+                progress_bar.progress(90)
                 
                 if response.get("success"):
                     st.session_state.results = {
                         "recommendations": response.get("recommendations", []),
                         "vton_result": response.get("vton_result", {}),
                         "user_analysis": response.get("user_analysis", {}),
-                        "processing_time": response.get("processing_time", 0)
+                        "processing_time": response.get("processing_time", 0),
+                        "correlation_id": response.get("correlation_id", "")
                     }
+                    progress_bar.progress(100)
+                    status_text.text("✅ Processing complete!")
                     progress_container.empty()
                     st.success("✅ Complete! Check your results below!")
                     st.rerun()
@@ -178,7 +194,8 @@ class SimpleVTONApp:
                 st.error(f"❌ Error: {str(e)}")
             finally:
                 st.session_state.processing = False
-                progress_container.empty()
+                if 'progress_container' in locals():
+                    progress_container.empty()
     
     def show_results(self):
         """Display recommendations and try-on results"""
@@ -190,6 +207,34 @@ class SimpleVTONApp:
         vton_result = results.get("vton_result", {})
         
         # Results in two columns
+        col1, col2 = st.columns([1, 1])
+        
+        # Show user analysis if available
+        user_analysis = results.get("user_analysis", {})
+        if user_analysis:
+            st.markdown("### 👤 Your Style Analysis")
+            analysis_cols = st.columns(3)
+            
+            with analysis_cols[0]:
+                if "dominant_colors" in user_analysis:
+                    st.write("**Your Color Palette:**")
+                    colors = user_analysis["dominant_colors"][:5]  # Top 5 colors
+                    color_html = '<div style="display: flex; flex-direction: row; gap: 5px;">'
+                    for color in colors:
+                        color_html += f'<div style="width: 25px; height: 25px; background-color: {color}; border-radius: 50%; border: 1px solid #ddd;"></div>'
+                    color_html += '</div>'
+                    st.markdown(color_html, unsafe_allow_html=True)
+            
+            with analysis_cols[1]:
+                if "body_shape" in user_analysis:
+                    st.write(f"**Body Type:** {user_analysis['body_shape'].title()}")
+            
+            with analysis_cols[2]:
+                if "season_compatibility" in user_analysis:
+                    st.write(f"**Season:** {user_analysis['season_compatibility'].title()}")
+            
+            st.markdown("---")
+        
         col1, col2 = st.columns([1, 1])
         
         with col1:
@@ -213,6 +258,18 @@ class SimpleVTONApp:
                         if metadata.get('price', 0) > 0:
                             st.markdown(f"**Price:** ${metadata['price']:.2f}")
                         
+                        # Show reasons if available
+                        reasons = metadata.get('reasons', [])
+                        if reasons:
+                            with st.expander("Why recommended?"):
+                                for reason in reasons[:3]:  # Show top 3 reasons
+                                    st.markdown(f"• {reason}")
+                        
+                        # Color info if available
+                        color = metadata.get('color', '')
+                        if color and color.startswith('#'):
+                            st.markdown(f"**Color:** <span style='color: {color}; font-weight: bold;'>{color}</span>", unsafe_allow_html=True)
+                        
                         # Buy button
                         product_link = metadata.get('product_link', '')
                         if product_link:
@@ -225,29 +282,75 @@ class SimpleVTONApp:
         with col2:
             st.markdown("### 🪞 Virtual Try-On Result")
             
-            if vton_result:
+            if vton_result and vton_result.get("success"):
                 st.markdown("<div class='result-card'>", unsafe_allow_html=True)
                 
-                # Try to get the final image
+                # Try to get the final image - handle different response formats
                 final_image_url = vton_result.get("final_image_url")
                 final_image_base64 = vton_result.get("final_image")
                 
+                image_displayed = False
+                
                 if final_image_url:
                     st.image(final_image_url, caption="Your Virtual Try-On", use_container_width=True)
+                    image_displayed = True
                 elif final_image_base64:
                     # Handle base64 image
-                    if final_image_base64.startswith("data:image"):
-                        final_image_base64 = final_image_base64.split(',')[1]
-                    st.image(io.BytesIO(base64.b64decode(final_image_base64)), 
-                            caption="Your Virtual Try-On", use_container_width=True)
-                else:
-                    st.info("Try-on result not available. The API may not have completed the processing.")
+                    try:
+                        if final_image_base64.startswith("data:image"):
+                            final_image_base64 = final_image_base64.split(',')[1]
+                        st.image(io.BytesIO(base64.b64decode(final_image_base64)), 
+                                caption="Your Virtual Try-On", use_container_width=True)
+                        image_displayed = True
+                    except Exception as e:
+                        st.error(f"Error displaying try-on image: {e}")
+                
+                # Fallback: check for try_on_images array (legacy format)
+                if not image_displayed:
+                    try_on_images = vton_result.get("try_on_images", [])
+                    if try_on_images:
+                        for image_data in try_on_images[:1]:  # Show first image only
+                            image_url = image_data.get("image_url")
+                            image_data_b64 = image_data.get("image_data")
+                            
+                            if image_url:
+                                st.image(image_url, caption="Your Virtual Try-On", use_container_width=True)
+                                image_displayed = True
+                                break
+                            elif image_data_b64:
+                                try:
+                                    if image_data_b64.startswith("data:image"):
+                                        image_data_b64 = image_data_b64.split(',')[1]
+                                    st.image(io.BytesIO(base64.b64decode(image_data_b64)), 
+                                            caption="Your Virtual Try-On", use_container_width=True)
+                                    image_displayed = True
+                                    break
+                                except Exception as e:
+                                    st.error(f"Error displaying try-on image: {e}")
+                
+                if not image_displayed:
+                    st.info("Try-on image processing completed but image not available for display.")
                 
                 # Processing info
                 processing_time = vton_result.get("processing_time", 0)
                 st.markdown(f"**Processing Time:** {processing_time:.1f} seconds")
                 
+                # Show additional debug info if available
+                if vton_result.get("debug_info"):
+                    with st.expander("Processing Details"):
+                        debug_info = vton_result["debug_info"]
+                        if "correlation_id" in debug_info:
+                            st.write(f"**Correlation ID:** {debug_info['correlation_id']}")
+                        if "items_processed" in debug_info:
+                            st.write(f"**Items Processed:** {debug_info['items_processed']}")
+                        if "final_image_size" in debug_info:
+                            st.write(f"**Image Size:** {debug_info['final_image_size']} bytes")
+                
                 st.markdown("</div>", unsafe_allow_html=True)
+            elif vton_result and not vton_result.get("success"):
+                st.error(f"Virtual try-on failed: {vton_result.get('error', 'Unknown error')}")
+                if vton_result.get("message"):
+                    st.info(vton_result["message"])
             else:
                 st.info("Virtual try-on result not available")
         
@@ -259,6 +362,7 @@ class SimpleVTONApp:
                 st.session_state.results = None
                 st.session_state.user_image = None
                 st.session_state.processing = False
+                st.session_state.button_clicked = False
                 st.rerun()
     
     def api_call(self, endpoint, data):
@@ -270,7 +374,7 @@ class SimpleVTONApp:
                 url,
                 json=data,
                 headers={"Content-Type": "application/json"},
-                timeout=300  # 5 minutes timeout
+                timeout=400  # 400 seconds timeout as requested
             )
             
             if response.status_code == 200:
