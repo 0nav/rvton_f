@@ -12,8 +12,7 @@ import os
 from PIL import Image
 import io
 import logging
-from typing import Dict, List, Any, Optional
-import os
+from typing import Dict, Any
 
 # Configure logging
 logging.basicConfig(
@@ -64,6 +63,10 @@ st.markdown("""
         border-radius: 4px;
         margin-top: 10px;
         transition: background-color 0.3s ease;
+        cursor: pointer;
+        font-weight: bold;
+        width: 100%;
+        border: none;
     }
     .buy-button:hover {
         background-color: #45a049;
@@ -147,36 +150,45 @@ class VTONFrontend:
     
     def __init__(self):
         """Initialize the application with configuration and session state"""
-        # API Configuration from Streamlit secrets
+        # API Configuration from Streamlit secrets or from environment variables as fallback
         try:
-            self.api_base_url = st.secrets["API_BASE_URL"]
-            self.debug_mode = st.secrets.get("DEBUG", "false").lower() == "true"
-        except Exception as e:
-            # Set to None if secrets not available
-            self.api_base_url = None
-            self.debug_mode = False
-            logger.error(f"Failed to load API configuration from Streamlit secrets: {e}")
-            # Show a clear error message to the user about how to configure
-            st.error("""
-            ⚠️ **Configuration Error**: API URL not found in Streamlit secrets.
+            self.api_base_url = st.secrets.get("API_BASE_URL") or os.environ.get("API_BASE_URL")
+            self.debug_mode = st.secrets.get("DEBUG", "false").lower() == "true" or os.environ.get("DEBUG", "false").lower() == "true"
             
-            Please set up your `.streamlit/secrets.toml` file with:
+            if not self.api_base_url:
+                # For local development - fallback to localhost if no config
+                self.api_base_url = "http://localhost:8000"
+                logger.info(f"No API URL configured, using default: {self.api_base_url}")
+        except Exception as e:
+            # Set to localhost if secrets not available
+            self.api_base_url = "http://localhost:8000"
+            self.debug_mode = False
+            logger.error(f"Failed to load API configuration, using default: {e}")
+            st.warning("""
+            ⚠️ **Configuration Notice**: Using default API URL. 
+            
+            For production deployment, please set up your `.streamlit/secrets.toml` file with:
             ```toml
             API_BASE_URL = "https://your-backend-api-url"
             ```
-            
-            Or add these secrets in the Streamlit Cloud dashboard if deploying.
             """)
         
-        # Show API connection status in sidebar
-        api_status = self._check_api_connection()
-        if api_status:
+        # Check health endpoint
+        api_health = self._check_api_health()
+        if api_health.get("status") == "healthy":
             st.sidebar.success(f"✅ Connected to API: {self.api_base_url}")
+            # Show additional API info
+            with st.sidebar.expander("API Details"):
+                st.write(f"Status: {api_health.get('status', 'unknown')}")
+                st.write(f"ComfyUI Connected: {api_health.get('comfyui_connected', False)}")
+                st.write(f"Cache Entries: {api_health.get('cache_stats', {}).get('entries', 0)}")
         else:
             if self.api_base_url is None:
                 st.sidebar.error("❌ API URL not configured. Please set API_BASE_URL in Streamlit secrets.")
             else:
                 st.sidebar.error(f"❌ Cannot connect to API: {self.api_base_url}")
+                if api_health.get("error"):
+                    st.sidebar.error(f"Error: {api_health.get('error')}")
         
         # Initialize session state for storing uploaded images and results
         if "user_image" not in st.session_state:
@@ -194,7 +206,17 @@ class VTONFrontend:
     
     def run(self):
         """Run the main application"""
-        st.markdown("<h1 class='main-header'>AI Fashion Studio</h1>", unsafe_allow_html=True)
+        # Enhanced header with logo and title
+        col1, col2 = st.columns([1, 5])
+        with col1:
+            st.markdown("""
+            <div style="text-align: center; margin-top: 10px;">
+                <span style="font-size: 3rem; color: #4CAF50;">👗</span>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with col2:
+            st.markdown("<h1 class='main-header'>AI Fashion Studio</h1>", unsafe_allow_html=True)
         
         # Show different content based on current step
         if st.session_state.current_step == "upload":
@@ -374,7 +396,7 @@ class VTONFrontend:
             for i, idx in enumerate(st.session_state.selected_items):
                 with selected_items_cols[i % cols_per_row]:
                     recommendation = st.session_state.recommendations[idx]
-                    st.markdown(f"<div class='recommendation-card'>", unsafe_allow_html=True)
+                    st.markdown("<div class='recommendation-card'>", unsafe_allow_html=True)
                     st.image(
                         recommendation["image"],
                         caption=f"{recommendation['type'].replace('_', ' ').title()}",
@@ -395,7 +417,7 @@ class VTONFrontend:
             
             for i, image_data in enumerate(try_on_images):
                 with vton_cols[i % len(vton_cols)]:
-                    st.markdown(f"<div class='recommendation-card'>", unsafe_allow_html=True)
+                    st.markdown("<div class='recommendation-card'>", unsafe_allow_html=True)
                     
                     image_url = image_data.get("image_url")
                     image_data_b64 = image_data.get("image_data")
@@ -589,7 +611,7 @@ class VTONFrontend:
                 
                 for idx, (item_idx, item) in enumerate(category_items):
                     with cols[idx % len(cols)]:
-                        st.markdown(f"<div class='recommendation-card'>", unsafe_allow_html=True)
+                        st.markdown("<div class='recommendation-card'>", unsafe_allow_html=True)
                         
                         # Display clothing image
                         st.image(
@@ -607,6 +629,12 @@ class VTONFrontend:
                         if "price" in item["metadata"] and item["metadata"]["price"] > 0:
                             st.markdown(f"**Price**: ${item['metadata']['price']:.2f}")
                         
+                        # Show recommendation reasons
+                        if "reasons" in item["metadata"] and item["metadata"]["reasons"]:
+                            with st.expander("Why we recommend this"):
+                                for reason in item["metadata"]["reasons"][:3]:  # Show up to 3 reasons
+                                    st.markdown(f"• {reason}")
+                        
                         # Selection and Buy buttons in same row
                         col1, col2 = st.columns(2)
                         with col1:
@@ -621,9 +649,15 @@ class VTONFrontend:
                         
                         with col2:
                             # Buy button if product link exists
-                            if "product_link" in item["metadata"] and item["metadata"]["product_link"]:
+                            product_link = item["metadata"].get("product_link", "")
+                            if product_link:
                                 st.markdown(
-                                    f"<a href='{item['metadata']['product_link']}' target='_blank' class='buy-button'>Buy</a>",
+                                    f"<a href='{product_link}' target='_blank' class='buy-button'>Buy Now</a>",
+                                    unsafe_allow_html=True
+                                )
+                            else:
+                                st.markdown(
+                                    "<span class='buy-button' style='background-color: #cccccc;'>Not Available</span>",
                                     unsafe_allow_html=True
                                 )
                         
@@ -811,9 +845,10 @@ class VTONFrontend:
         
         # Count categories
         tops = [t for t in clothing_types if t in top_types]
-        outerwear = [t for t in clothing_types if t in outerwear_types]
         bottoms = [t for t in clothing_types if t in bottom_types]
         dresses = [t for t in clothing_types if t in dress_types]
+        
+        # Note: outerwear check remains available in warnings logic if needed
         
         # Check for conflicts
         if len(dresses) > 0 and (len(tops) > 0 or len(bottoms) > 0):
@@ -835,8 +870,31 @@ class VTONFrontend:
             "warnings": warnings
         }
     
+    def _check_api_health(self) -> Dict[str, Any]:
+        """Check API health endpoint and return status information."""
+        # Return error information if api_base_url is None
+        if self.api_base_url is None:
+            return {"status": "error", "error": "API URL not configured"}
+            
+        try:
+            # Try to access the health endpoint
+            response = requests.get(
+                f"{self.api_base_url}/health",
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return {
+                    "status": "error", 
+                    "error": f"API returned status code: {response.status_code}"
+                }
+        except requests.RequestException as e:
+            return {"status": "error", "error": str(e)}
+    
     def _check_api_connection(self):
-        """Check if the API is reachable"""
+        """Check if the API is reachable - LEGACY METHOD"""
         # Return False immediately if api_base_url is None
         if self.api_base_url is None:
             return False
@@ -848,7 +906,8 @@ class VTONFrontend:
                 timeout=10
             )
             return response.status_code < 400
-        except:
+        except Exception as e:
+            logger.warning(f"API connection check failed: {e}")
             return False
                 
     def _api_call(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -863,7 +922,7 @@ class VTONFrontend:
         
         try:
             # Show loading indicator while waiting for API response
-            progress_bar = progress_placeholder.progress(0, "Connecting to API...")
+            progress_placeholder.progress(0, "Connecting to API...")
             
             # Make the API call with 540 seconds timeout
             response = requests.post(
@@ -883,7 +942,8 @@ class VTONFrontend:
                 try:
                     error_response = response.json()
                     error_detail = error_response.get("detail", str(error_response))
-                except:
+                except Exception as json_error:
+                    logger.error(f"Error parsing API error response: {json_error}")
                     error_detail = response.text
                 
                 error_msg = f"API Error ({response.status_code}): {error_detail}"
