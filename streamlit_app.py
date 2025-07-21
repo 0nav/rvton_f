@@ -7,7 +7,6 @@ import streamlit as st
 import requests
 import base64
 import time
-import json
 import os
 from PIL import Image
 import io
@@ -159,6 +158,18 @@ class VTONFrontend:
                 # For local development - fallback to localhost if no config
                 self.api_base_url = "http://localhost:8000"
                 logger.info(f"No API URL configured, using default: {self.api_base_url}")
+            else:
+                # Ensure URL has proper protocol
+                if not (self.api_base_url.startswith("http://") or self.api_base_url.startswith("https://")):
+                    # If no protocol, assume https
+                    self.api_base_url = f"https://{self.api_base_url}"
+                    logger.info(f"Added https:// protocol to API URL: {self.api_base_url}")
+                
+                # Remove trailing slash if present
+                if self.api_base_url.endswith("/"):
+                    self.api_base_url = self.api_base_url[:-1]
+                    
+                logger.info(f"Using API URL: {self.api_base_url}")
         except Exception as e:
             # Set to localhost if secrets not available
             self.api_base_url = "http://localhost:8000"
@@ -878,19 +889,44 @@ class VTONFrontend:
             
         try:
             # Try to access the health endpoint
+            health_url = f"{self.api_base_url}/health"
+            logger.info(f"Checking API health at: {health_url}")
+            
             response = requests.get(
-                f"{self.api_base_url}/health",
+                health_url,
                 timeout=5
             )
             
             if response.status_code == 200:
+                logger.info("Health check successful")
                 return response.json()
             else:
+                error_msg = f"API returned status code: {response.status_code}"
+                logger.error(f"Health check failed: {error_msg}")
                 return {
                     "status": "error", 
-                    "error": f"API returned status code: {response.status_code}"
+                    "error": error_msg
                 }
         except requests.RequestException as e:
+            logger.error(f"Health check request failed: {e}")
+            
+            # Try alternative endpoint structure (without /health)
+            try:
+                response = requests.head(
+                    self.api_base_url,
+                    timeout=5
+                )
+                if response.status_code < 400:
+                    logger.info("Base URL check successful")
+                    return {
+                        "status": "degraded",
+                        "message": "API is reachable but health endpoint not available",
+                        "comfyui_connected": False,
+                        "cache_stats": {"entries": 0}
+                    }
+            except Exception as alt_error:
+                logger.error(f"Alternative health check also failed: {alt_error}")
+                
             return {"status": "error", "error": str(e)}
     
     def _check_api_connection(self):
@@ -918,6 +954,7 @@ class VTONFrontend:
             raise ValueError("API_BASE_URL is not configured in Streamlit secrets")
             
         url = f"{self.api_base_url}{endpoint}"
+        logger.info(f"Making API call to: {url}")
         progress_placeholder = st.empty()
         
         try:
@@ -936,6 +973,7 @@ class VTONFrontend:
             progress_placeholder.empty()
                 
             if response.status_code == 200:
+                logger.info(f"API call to {endpoint} successful")
                 return response.json()
             else:
                 error_detail = "Unknown error"
@@ -948,6 +986,11 @@ class VTONFrontend:
                 
                 error_msg = f"API Error ({response.status_code}): {error_detail}"
                 logger.error(error_msg)
+                
+                # Show detailed error information in debug mode
+                if self.debug_mode:
+                    logger.debug(f"Full response: {response.text}")
+                    
                 raise Exception(error_msg)
         
         except requests.Timeout:
