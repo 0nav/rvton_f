@@ -150,7 +150,6 @@ class VTONFrontend:
         """Initialize the application with configuration and session state"""
         # Simple API Configuration
         self.api_base_url = st.secrets.get("API_BASE_URL", "http://localhost:8000")
-        self.debug_mode = st.secrets.get("DEBUG", "false").lower() == "true"
         
         # Ensure URL has proper protocol
         if not self.api_base_url.startswith(("http://", "https://")):
@@ -204,7 +203,10 @@ class VTONFrontend:
             self._render_preferences_section()
             
             # Process button to get recommendations
-            if st.button("Get Recommendations", type="primary", disabled=st.session_state.processing):
+            button_disabled = st.session_state.processing or st.session_state.user_image is None
+            rec_button = st.button("Get Recommendations", type="primary", disabled=button_disabled)
+            
+            if rec_button:
                 self._get_recommendations()
                 
         elif st.session_state.current_step == "select":
@@ -363,6 +365,7 @@ class VTONFrontend:
             st.info("No try-on results yet. Please select items and try them on first.")
             return
         
+        st.success("Try-on completed successfully!")
         st.subheader("Your Virtual Try-On Results")
         
         # Display the selected items in a nice grid
@@ -450,11 +453,6 @@ class VTONFrontend:
                         st.markdown("</div>", unsafe_allow_html=True)
             else:
                 st.info("No try-on images were generated. The API may not have completed the try-on process.")
-                
-                # Show debug info if available
-                if self.debug_mode:
-                    st.write("**VTON Results Debug:**")
-                    st.json(st.session_state.vton_results)
             
         # Display any additional processing information
         with st.expander("Processing Details"):
@@ -517,34 +515,12 @@ class VTONFrontend:
                 st.session_state.recommendations = response.get("recommendations", [])
                 st.session_state.user_analysis = response.get("user_analysis", {})
                 
-                # Display user analysis summary
-                st.subheader("Your Style Analysis")
-                cols = st.columns(3)
-                
-                # Display dominant colors
-                with cols[0]:
-                    if "dominant_colors" in st.session_state.user_analysis:
-                        st.write("**Your Color Palette:**")
-                        colors = st.session_state.user_analysis["dominant_colors"]
-                        color_html = '<div style="display: flex; flex-direction: row;">'
-                        for color in colors[:5]:  # Show up to 5 colors
-                            color_html += f'<div class="color-swatch" style="background-color: {color};"></div>'
-                        color_html += '</div>'
-                        st.markdown(color_html, unsafe_allow_html=True)
-                
-                # Display body shape
-                with cols[1]:
-                    if "body_shape" in st.session_state.user_analysis:
-                        st.write(f"**Body Type:** {st.session_state.user_analysis['body_shape'].title()}")
-                
-                # Display season compatibility
-                with cols[2]:
-                    if "season_compatibility" in st.session_state.user_analysis:
-                        st.write(f"**Season:** {st.session_state.user_analysis['season_compatibility'].title()}")
-                
+                # Automatically move to the next step without requiring another click
                 st.session_state.current_step = "select"  # Move to selection step
                 st.session_state.selected_items = []  # Clear any previous selections
-                st.success("Recommendations generated successfully based on your style!")
+                
+                # Use rerun to refresh the page with the new step
+                st.rerun()
             else:
                 st.error(f"Error: {response.get('message', 'Unknown error')}")
         except Exception as e:
@@ -555,6 +531,33 @@ class VTONFrontend:
     def _render_recommendation_selection(self):
         """Render the recommendations and let user select items to try on"""
         st.subheader("Your Personalized Recommendations")
+        
+        # Display user analysis summary
+        if st.session_state.user_analysis:
+            st.write("Based on your photo analysis:")
+            cols = st.columns(3)
+            
+            # Display dominant colors
+            with cols[0]:
+                if "dominant_colors" in st.session_state.user_analysis:
+                    st.write("**Your Color Palette:**")
+                    colors = st.session_state.user_analysis["dominant_colors"]
+                    color_html = '<div style="display: flex; flex-direction: row;">'
+                    for color in colors[:5]:  # Show up to 5 colors
+                        color_html += f'<div class="color-swatch" style="background-color: {color};"></div>'
+                    color_html += '</div>'
+                    st.markdown(color_html, unsafe_allow_html=True)
+            
+            # Display body shape
+            with cols[1]:
+                if "body_shape" in st.session_state.user_analysis:
+                    st.write(f"**Body Type:** {st.session_state.user_analysis['body_shape'].title()}")
+            
+            # Display season compatibility
+            with cols[2]:
+                if "season_compatibility" in st.session_state.user_analysis:
+                    st.write(f"**Season:** {st.session_state.user_analysis['season_compatibility'].title()}")
+        
         st.write("Our AI has analyzed your photo and style preferences to recommend these items.")
         st.write("Select items below that you'd like to try on:")
         
@@ -829,15 +832,11 @@ class VTONFrontend:
             if response.get("success"):
                 st.session_state.vton_results = response
                 st.session_state.current_step = "results"  # Move to results step
-                st.success("Try-on completed successfully!")
+                st.rerun()
             else:
                 st.error(f"Error: {response.get('message', 'Unknown error')}")
-                if self.debug_mode:
-                    st.expander("Debug Info").json(response)
         except Exception as e:
             st.error(f"Error: {str(e)}")
-            if self.debug_mode:
-                st.exception(e)
         finally:
             st.session_state.processing = False
     
@@ -928,32 +927,9 @@ if __name__ == "__main__":
         "4. View try-on results"
     )
     
-    # Add a Debug section in the sidebar for admins/developers
-    with st.sidebar.expander("Debug Info", expanded=False):
-        st.write("API Response Structure")
-        if st.session_state.get("recommendations"):
-            # Show the first recommendation's structure to help diagnose issues
-            sample_rec = st.session_state.recommendations[0] if st.session_state.recommendations else {}
-            st.json(sample_rec)
-            
-            # Display specific product link fields
-            st.write("Product Link Check:")
-            if "metadata" in sample_rec and "product_link" in sample_rec["metadata"]:
-                st.write(f"metadata.product_link: {sample_rec['metadata']['product_link']}")
-            else:
-                st.write("metadata.product_link: Not found")
-                
-            if "link" in sample_rec:
-                st.write(f"link: {sample_rec['link']}")
-            else:
-                st.write("link: Not found")
-                
-            if "metadata" in sample_rec and "link" in sample_rec["metadata"]:
-                st.write(f"metadata.link: {sample_rec['metadata']['link']}")
-            else:
-                st.write("metadata.link: Not found")
-        else:
-            st.write("No recommendations available yet")
+    # Add version info in sidebar footer
+    st.sidebar.markdown("---")
+    st.sidebar.caption("AI Fashion Studio v2.0")
     
     try:
         # Initialize and run the app
