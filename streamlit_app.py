@@ -55,7 +55,7 @@ st.markdown("""
         box-shadow: 0 8px 16px rgba(0,0,0,0.15);
     }
     .buy-button {
-        background-color: #FF5722;
+        background-color: #4CAF50;
         color: white;
         padding: 8px 16px;
         text-align: center;
@@ -64,13 +64,9 @@ st.markdown("""
         border-radius: 4px;
         margin-top: 10px;
         transition: background-color 0.3s ease;
-        font-weight: bold;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
     }
     .buy-button:hover {
-        background-color: #E64A19;
-        transform: translateY(-2px);
-        box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+        background-color: #45a049;
     }
     .sub-header {
         font-size: 1.75rem;
@@ -178,23 +174,9 @@ class VTONFrontend:
             st.sidebar.success(f"✅ Connected to API: {self.api_base_url}")
         else:
             if self.api_base_url is None:
-                st.sidebar.error("""
-                ❌ API URL not configured
-                
-                Please set API_BASE_URL in Streamlit secrets.
-                See the README.md file for setup instructions.
-                """)
+                st.sidebar.error("❌ API URL not configured. Please set API_BASE_URL in Streamlit secrets.")
             else:
-                st.sidebar.error(f"""
-                ❌ Cannot connect to API: {self.api_base_url}
-                
-                Possible issues:
-                - API server is down
-                - Network connectivity issues
-                - Incorrect API URL
-                
-                Check your configuration and try again.
-                """)
+                st.sidebar.error(f"❌ Cannot connect to API: {self.api_base_url}")
         
         # Initialize session state for storing uploaded images and results
         if "user_image" not in st.session_state:
@@ -291,90 +273,54 @@ class VTONFrontend:
         st.subheader("Style Preferences")
         st.write("Tell us your preferences to get better recommendations")
         
-        # User preferences inputs
-        preferences = {}
-        
-        st.markdown("### Style Preferences")
-        
-        # Occasion preference - new!
-        occasion_options = ["casual", "formal", "business", "party", "date"]
-        preferences["occasion"] = st.selectbox(
-            "Occasion", 
-            ["Any"] + occasion_options,
-            help="Select the occasion you're dressing for"
-        )
-        # Convert "Any" to None for the API
-        if preferences["occasion"] == "Any":
-            preferences["occasion"] = None
-        
-        # Color preferences
-        color_options = ["red", "blue", "green", "black", "white", "yellow", "purple", "pink", "orange", "brown", "grey"]
-        preferences["preferred_colors"] = st.multiselect(
-            "Preferred Colors", 
-            color_options,
-            help="Select colors you prefer to wear"
-        )
-        
-        # Style preferences
-        style_options = ["casual", "formal", "business", "vintage", "sporty", "bohemian", "minimalist"]
-        preferences["style"] = st.selectbox(
-            "Style", 
-            style_options,
-            help="Select your preferred style"
-        )
-        
-        # Categories filtering - new!
         col1, col2 = st.columns(2)
+        
         with col1:
-            category_options = ["tops", "bottoms", "dresses", "outerwear", "footwear", "accessories"]
-            preferences["include_categories"] = st.multiselect(
-                "Include Categories", 
-                category_options,
-                help="Only show these categories (leave empty for all)"
+            style = st.selectbox(
+                "Style Preference",
+                options=["casual", "formal", "business", "sporty", "trendy", "classic", "bohemian"],
+                index=0,
+                help="Choose your preferred clothing style"
             )
             
-            # Map the friendly category names to the backend types
-            category_mapping = {
-                "tops": ["shirt", "t_shirt", "blouse", "top", "tank_top", "crop_top"],
-                "bottoms": ["pants", "jeans", "shorts", "skirt", "leggings"],
-                "dresses": ["dress", "maxi_dress", "mini_dress", "cocktail_dress"],
-                "outerwear": ["jacket", "blazer", "coat", "cardigan", "sweater", "hoodie", "vest"],
-                "footwear": ["shoes", "sneakers", "boots", "heels"],
-                "accessories": ["hat", "bag", "belt", "scarf", "watch", "gloves"]
-            }
-            
-            # Flatten the categories for the API
-            if preferences["include_categories"]:
-                flat_categories = []
-                for category in preferences["include_categories"]:
-                    flat_categories.extend(category_mapping.get(category, []))
-                preferences["include_categories"] = flat_categories
+            gender = st.selectbox(
+                "Gender",
+                options=["male", "female", "unisex"],
+                index=0,
+                help="Select your gender for better fitting recommendations"
+            )
         
         with col2:
-            preferences["exclude_categories"] = st.multiselect(
-                "Exclude Categories", 
-                category_options,
-                help="Do not show these categories"
+            season = st.selectbox(
+                "Season",
+                options=["spring", "summer", "fall", "winter"],
+                index=1,
+                help="Season for which you need clothing recommendations"
             )
             
-            # Flatten the excluded categories
-            if preferences["exclude_categories"]:
-                flat_exclude = []
-                for category in preferences["exclude_categories"]:
-                    flat_exclude.extend(category_mapping.get(category, []))
-                preferences["exclude_categories"] = flat_exclude
-        
-        # Number of recommendations
-        max_recommendations = st.slider("Number of Recommendations", min_value=3, max_value=15, value=10, step=1)
-        st.session_state.max_recommendations = max_recommendations
-        
-        # Set minimum score threshold - new!
-        min_score = st.slider("Minimum Match Score", min_value=0.0, max_value=1.0, value=0.3, step=0.05,
-                             help="Only show items with at least this match score (0-1)")
-        preferences["min_score"] = min_score
+            occasion = st.selectbox(
+                "Occasion",
+                options=["everyday", "work", "party", "date", "formal", "vacation"],
+                index=0,
+                help="The occasion you're shopping for"
+            )
         
         # Store preferences in session state
-        st.session_state.preferences = preferences
+        st.session_state.preferences = {
+            "style": style,
+            "gender": gender,
+            "season": season,
+            "occasion": occasion
+        }
+        
+        # Number of recommendations
+        st.session_state.max_recommendations = st.slider(
+            "Number of Recommendations",
+            min_value=1,
+            max_value=10,
+            value=5,
+            help="How many recommendations would you like to see"
+        )
     
     def _process_request(self):
         """Process the recommendation and try-on request"""
@@ -403,33 +349,9 @@ class VTONFrontend:
                     st.session_state.user_analysis = response.get("user_analysis", {})
                     st.success("Successfully processed your request!")
                 else:
-                    error_message = response.get('message', 'Unknown error')
-                    st.error(f"Error: {error_message}")
-                    
-                    # Provide more helpful messages for specific errors
-                    if "face detection" in error_message.lower():
-                        st.warning("""
-                        The system couldn't properly detect a face in your photo.
-                        
-                        Tips for better results:
-                        - Use a photo with clear lighting
-                        - Face the camera directly
-                        - Make sure your full upper body is visible
-                        - Avoid sunglasses or heavy accessories
-                        """)
-                    elif "body detection" in error_message.lower():
-                        st.warning("""
-                        The system couldn't properly detect your body in the photo.
-                        
-                        Tips for better results:
-                        - Use a photo where your full upper body is visible
-                        - Stand against a simple background
-                        - Wear fitted clothing (not too loose)
-                        - Make sure the lighting is good
-                        """)
+                    st.error(f"Error: {response.get('message', 'Unknown error')}")
         except Exception as e:
             st.error(f"Error: {str(e)}")
-            logger.exception("Error in processing request")
         finally:
             st.session_state.processing = False
     
@@ -511,12 +433,9 @@ class VTONFrontend:
         with col2:
             if st.button("Start Over", type="primary", use_container_width=True):
                 # Reset session state and go back to upload step
-                for key in ["user_image", "recommendations", "vton_results", 
-                           "selected_items", "user_analysis", "preferences"]:
-                    if key in st.session_state:
-                        st.session_state[key] = None
                 st.session_state.current_step = "upload"
-                st.session_state.processing = False
+                st.session_state.selected_items = []
+                st.session_state.vton_results = None
                 st.rerun()
     
     def _get_recommendations(self):
@@ -544,7 +463,9 @@ class VTONFrontend:
                     </div>
                     """, unsafe_allow_html=True)
                     st.markdown("<h3 style='text-align: center;'>Analyzing your style and generating recommendations...</h3>", unsafe_allow_html=True)
-                    st.markdown("<p style='text-align: center;'>This may take a minute. Please wait...</p>", unsafe_allow_html=True)                # Prepare the request data - without try-on
+                    st.markdown("<p style='text-align: center;'>This may take a minute. Please wait...</p>", unsafe_allow_html=True)
+            
+            # Prepare the request data - without try-on
             request_data = {
                 "user_image": st.session_state.user_image,
                 "preferences": st.session_state.preferences,
@@ -558,19 +479,7 @@ class VTONFrontend:
             # Clear the loading animation
             progress_container.empty()            
             if response.get("success"):
-                recommendations = response.get("recommendations", [])
-                
-                # Process each recommendation to ensure link is properly mapped to metadata
-                for item in recommendations:
-                    # Make sure metadata exists
-                    if "metadata" not in item:
-                        item["metadata"] = {}
-                    
-                    # If link exists at the top level, map it to metadata.product_link
-                    if "link" in item:
-                        item["metadata"]["product_link"] = item["link"]
-                
-                st.session_state.recommendations = recommendations
+                st.session_state.recommendations = response.get("recommendations", [])
                 st.session_state.user_analysis = response.get("user_analysis", {})
                 
                 # Display user analysis summary
@@ -712,7 +621,7 @@ class VTONFrontend:
                         
                         with col2:
                             # Buy button if product link exists
-                            if "metadata" in item and "product_link" in item["metadata"] and item["metadata"]["product_link"]:
+                            if "product_link" in item["metadata"] and item["metadata"]["product_link"]:
                                 st.markdown(
                                     f"<a href='{item['metadata']['product_link']}' target='_blank' class='buy-button'>Buy</a>",
                                     unsafe_allow_html=True
@@ -747,19 +656,11 @@ class VTONFrontend:
                 st.error("⚠️ Incompatible combination detected:")
                 for conflict in compatibility["conflicts"]:
                     st.error(f"- {conflict}")
-                st.warning("""
-                Please adjust your selection to continue.
-                
-                Common rules:
-                - Only one top item allowed
-                - Only one dress allowed (no tops or bottoms with dresses)
-                - Only one bottom item allowed (except with leggings)
-                """)
+                st.warning("Please adjust your selection to continue.")
             elif compatibility["warnings"]:
                 st.warning("⚠️ Potential issues with this combination:")
                 for warning in compatibility["warnings"]:
                     st.warning(f"- {warning}")
-                st.info("You can still proceed, but results may not be optimal.")
         else:
             st.warning("Please select at least one item to try on")
         
@@ -816,34 +717,17 @@ class VTONFrontend:
                     
                     # Add a countdown timer that updates
                     countdown_placeholder = st.empty()
-                    progress_bar = st.progress(0)
                     start_time = time.time()
-                    max_time = 540  # 9 minutes in seconds
                     
-                    # Update timer and progress bar in the background
-                    for i in range(30):  # Update every 2 seconds for first minute
-                        if time.time() - start_time > 60:
-                            break
-                            
+                    def update_timer():
                         elapsed = int(time.time() - start_time)
-                        remaining = max(0, max_time - elapsed)
+                        remaining = max(0, 540 - elapsed)
                         minutes = remaining // 60
                         seconds = remaining % 60
-                        
-                        # Update the timer display
-                        countdown_placeholder.markdown(
-                            f"<p style='text-align: center;'>Time remaining: {minutes}m {seconds}s</p>", 
-                            unsafe_allow_html=True
-                        )
-                        
-                        # Update progress bar (scaled to show faster progress at start)
-                        progress_bar.progress(min(0.2, elapsed / max_time * 2))
-                        
-                        # Check if request has completed
-                        if not st.session_state.processing:
-                            break
-                            
-                        time.sleep(2)
+                        countdown_placeholder.markdown(f"<p style='text-align: center;'>Time remaining: {minutes}m {seconds}s</p>", unsafe_allow_html=True)
+                    
+                    # Initial timer display
+                    update_timer()
             
             # Get selected clothing items
             selected_recommendations = [
@@ -1009,36 +893,11 @@ class VTONFrontend:
         except requests.Timeout:
             # Specific handling for timeout errors
             progress_placeholder.empty()
-            st.error("""
-            ⏱️ **Request Timed Out**
-            
-            The server took too long to respond. This could be due to:
-            - High server load
-            - Complex try-on processing
-            - Network issues
-            
-            You can:
-            1. Try again with fewer items
-            2. Try again later when server load may be lower
-            3. Check your internet connection
-            """)
-            raise Exception("API request timed out. The server took too long to respond.")
+            raise Exception("API request timed out. The server took too long to respond. Please try again later.")
             
         except requests.RequestException as e:
             # Clear any progress indicators
             progress_placeholder.empty()
-            st.error(f"""
-            🔌 **Connection Error**
-            
-            Could not connect to the API server: {self.api_base_url}
-            
-            Please check:
-            - Your internet connection
-            - That the API server is running
-            - That the API_BASE_URL in your configuration is correct
-            
-            Technical details: {str(e)}
-            """)
             raise Exception(f"API Connection Error: {e}")
 
 
