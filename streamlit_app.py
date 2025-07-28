@@ -1,416 +1,339 @@
 """
-Simple VTON Frontend - One Page, Direct Results
-Upload photo, set preferences, get recommendations + try-on results instantly.
+Simple VTON Frontend – UI 2.0
+Same API contract, smoother experience.
 """
 
-import streamlit as st
-import requests
 import base64
-from PIL import Image
 import io
 import logging
+from typing import Any, Dict, List, Optional
 
-# Configure logging
+import requests
+import streamlit as st
+from PIL import Image
+
+# ---------- Logging ----------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configure page
+# ---------- Page Config ----------
 st.set_page_config(
     page_title="AI Fashion Studio",
     page_icon="👗",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
-# Custom CSS
-st.markdown("""
+# ---------- CSS ----------
+st.markdown(
+    """
 <style>
+    /* Root colour palette */
+    :root {
+        --primary: #6a11cb;
+        --secondary: #2575fc;
+        --bg: #f9fafb;
+        --card: #ffffff;
+        --text: #1f2937;
+        --muted: #9ca3af;
+        --success: #10b981;
+        --error: #ef4444;
+    }
+
+    /* Global tweaks */
+    html, body, .main, .block-container { background-color: var(--bg); }
+    h1, h2, h3, h4 { font-family: 'Inter', sans-serif; color: var(--text); }
     .main-header {
-        font-size: 2.5rem;
+        font-size: 2.75rem;
+        font-weight: 700;
         text-align: center;
-        margin-bottom: 2rem;
-        background: linear-gradient(135deg, #6a11cb 0%, #2575fc 100%);
+        margin: 1rem 0 0.5rem 0;
+        background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
     }
-    .result-card {
-        border: 1px solid #f0f0f0;
-        border-radius: 10px;
-        padding: 1rem;
+
+    /* Cards */
+    .result-card, .uploader-card {
+        background: var(--card);
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 1.25rem 1.5rem;
         margin: 1rem 0;
-        background-color: #ffffff;
-        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        transition: transform 0.2s, box-shadow 0.2s;
     }
-    .stButton>button {
-        border-radius: 20px;
-        font-weight: 600;
-        width: 100%;
+    .result-card:hover, .uploader-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    }
+
+    /* Buttons */
+    .stButton > button {
+        border-radius: 8px;
         height: 3rem;
-        font-size: 1.2rem;
+        font-weight: 600;
+        font-size: 1.1rem;
     }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
+# ---------- Session Helpers ----------
+def init_state():
+    for key in ("user_image", "processing", "results", "scroll"):
+        if key not in st.session_state:
+            st.session_state[key] = None if key != "processing" else False
+
+init_state()
+
+# ---------- App ----------
 class SimpleVTONApp:
     def __init__(self):
         self.api_base_url = st.secrets.get("API_BASE_URL", "http://localhost:8000")
-        
-        # Ensure URL format
         if not self.api_base_url.startswith(("http://", "https://")):
             self.api_base_url = f"http://{self.api_base_url}"
-        if self.api_base_url.endswith("/"):
-            self.api_base_url = self.api_base_url[:-1]
-        
-        # Initialize session state
-        if "user_image" not in st.session_state:
-            st.session_state.user_image = None
-        if "processing" not in st.session_state:
-            st.session_state.processing = False
-        if "results" not in st.session_state:
-            st.session_state.results = None
-        if "button_clicked" not in st.session_state:
-            st.session_state.button_clicked = False
-    
+        self.api_base_url = self.api_base_url.rstrip("/")
+
+    # ---------- UI ----------
     def run(self):
-        # Header
-        st.markdown("<h1 class='main-header'>👗 AI Fashion Studio</h1>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align: center; font-size: 1.2rem; color: #666;'>Upload your photo, set preferences, get instant recommendations + try-on results!</p>", unsafe_allow_html=True)
-        
-        # Main content in two columns
-        col1, col2 = st.columns([1, 1])
-        
-        with col1:
+        st.markdown(
+            '<h1 class="main-header">👗 AI Fashion Studio</h1>', unsafe_allow_html=True
+        )
+        st.markdown(
+            "<p style='text-align:center; color:var(--muted); font-size:1.1rem; margin-bottom:2rem;'>"
+            "Upload your photo → pick preferences → instant recommendations & try-on</p>",
+            unsafe_allow_html=True,
+        )
+
+        left, right = st.columns([1, 1], gap="large")
+
+        with left:
+            st.markdown('<div class="uploader-card">', unsafe_allow_html=True)
             st.subheader("📸 Upload Your Photo")
-            uploaded_file = st.file_uploader("Choose your photo", type=["jpg", "jpeg", "png"])
-            
-            if uploaded_file is not None:
+            uploaded_file = st.file_uploader(
+                "Drag & drop or click to select",
+                type=["jpg", "jpeg", "png"],
+                accept_multiple_files=False,
+                key="uploader",
+            )
+
+            if uploaded_file:
                 try:
-                    image = Image.open(uploaded_file)
-                    if image.mode != "RGB":
-                        image = image.convert("RGB")
-                    
-                    # Display uploaded image
-                    st.image(image, caption="Your Photo", use_container_width=True)
-                    
-                    # Store as base64
+                    img = Image.open(uploaded_file).convert("RGB")
+                    st.image(img, caption="Preview", use_container_width=True)
                     buf = io.BytesIO()
-                    image.save(buf, format="JPEG")
-                    st.session_state.user_image = base64.b64encode(buf.getvalue()).decode("utf-8")
+                    img.save(buf, format="JPEG")
+                    st.session_state.user_image = base64.b64encode(buf.getvalue()).decode()
                 except Exception as e:
                     st.error(f"Error processing image: {e}")
                     st.session_state.user_image = None
-            
-            if not st.session_state.user_image:
-                st.info("👆 Please upload your photo to continue")
-        
-        with col2:
+            else:
+                st.info("👆 Please upload a photo", icon="ℹ️")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        with right:
+            st.markdown('<div class="uploader-card">', unsafe_allow_html=True)
             st.subheader("⚙️ Style Preferences")
-            
-            # Simple preferences
-            gender = st.selectbox("Gender", ["male", "female", "unisex"], index=0)
-            style = st.selectbox("Style", ["casual", "formal", "business", "sporty", "trendy"], index=0)
-            season = st.selectbox("Season", ["spring", "summer", "fall", "winter"], index=1)
-            occasion = st.selectbox("Occasion", ["everyday", "work", "party", "date", "formal"], index=0)
-            
+            gender = st.selectbox(
+                "Gender",
+                ["male", "female", "unisex"],
+                help="Used to filter catalogue items.",
+            )
+            style = st.selectbox(
+                "Style",
+                ["casual", "formal", "business", "sporty", "trendy"],
+                help="Defines the overall vibe.",
+            )
+            season = st.selectbox("Season", ["spring", "summer", "fall", "winter"])
+            occasion = st.selectbox(
+                "Occasion",
+                ["everyday", "work", "party", "date", "formal"],
+                help="Tailors to the specific event.",
+            )
+
             st.markdown("---")
-            
-            # Process button
-            process_disabled = st.session_state.processing or st.session_state.user_image is None
-            
-            if st.button("🪄 Get Recommendations & Try-On", 
-                        disabled=process_disabled, 
-                        type="primary"):
-                if st.session_state.user_image:
-                    st.session_state.processing = True
-                    # Don't call st.rerun() here - let the processing happen first
-                else:
-                    st.error("Please upload an image first!")
-            
-            # Process when processing state is True
-            if st.session_state.processing and st.session_state.user_image:
-                self.process_recommendations_and_tryon(gender, style, season, occasion)
-        
-        # Show results if available
+            go = st.button(
+                "🪄 Get Recommendations & Try-On",
+                type="primary",
+                disabled=not st.session_state.user_image or st.session_state.processing,
+                use_container_width=True,
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        if go and st.session_state.user_image:
+            st.session_state.processing = True
+            self.process_recommendations_and_tryon(gender, style, season, occasion)
+
         if st.session_state.results:
             self.show_results()
-    
+
+    # ---------- Processing ----------
     def process_recommendations_and_tryon(self, gender, style, season, occasion):
-        """Process recommendations and try-on in one go"""
-        if not st.session_state.user_image:
-            st.error("Please upload an image first!")
+        placeholder = st.empty()
+        with placeholder.container():
+            st.info("🔄 Processing your request…")
+            bar = st.progress(0)
+
+        payload = {
+            "user_image": st.session_state.user_image,
+            "preferences": {
+                "style": style,
+                "gender": gender,
+                "season": season,
+                "occasion": occasion,
+            },
+            "max_recommendations": 3,
+            "include_vton": True,
+        }
+
+        try:
+            bar.progress(20)
+            resp = self.api_call("/recommend-and-tryon", payload)
+            bar.progress(100)
+            if resp.get("success"):
+                st.session_state.results = resp
+                st.session_state.scroll = True  # trigger scroll
+            else:
+                st.error(f"❌ {resp.get('message','Unknown error')}")
+        except Exception as e:
+            st.error(f"❌ {e}")
+        finally:
             st.session_state.processing = False
-            return
-        
-        # Create progress container
-        with st.container():
-            st.info("🔄 Processing your request... This may take several minutes...")
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            try:
-                # Step 1: Get recommendations + try-on
-                status_text.text("Step 1/3: Analyzing your photo and style...")
-                progress_bar.progress(25)
-                
-                request_data = {
-                    "user_image": st.session_state.user_image,
-                    "preferences": {
-                        "style": style,
-                        "gender": gender,
-                        "season": season,
-                        "occasion": occasion
-                    },
-                    "max_recommendations": 3,  # Fixed to 3 for simplicity
-                    "include_vton": True  # Always include try-on
-                }
-                
-                status_text.text("Step 2/3: Getting personalized recommendations...")
-                progress_bar.progress(50)
-                
-                # Make API call
-                response = self.api_call("/recommend-and-tryon", request_data)
-                
-                status_text.text("Step 3/3: Processing virtual try-on results...")
-                progress_bar.progress(90)
-                
-                if response.get("success"):
-                    st.session_state.results = {
-                        "recommendations": response.get("recommendations", []),
-                        "vton_result": response.get("vton_result", {}),
-                        "user_analysis": response.get("user_analysis", {}),
-                        "processing_time": response.get("processing_time", 0),
-                        "correlation_id": response.get("correlation_id", "")
-                    }
-                    progress_bar.progress(100)
-                    status_text.text("✅ Processing complete!")
-                    st.success("✅ Complete! Check your results below!")
-                else:
-                    st.error(f"❌ Error: {response.get('message', 'Unknown error')}")
-                    
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
-            finally:
-                st.session_state.processing = False
-                # Rerun to update button state and show results
-                st.rerun()
-    
+            placeholder.empty()
+
+    # ---------- Results ----------
     def show_results(self):
-        """Display recommendations and try-on results"""
+        if st.session_state.scroll:
+            st.session_state.scroll = False
+            st.html(
+                """
+                <script>
+                setTimeout(() => document.querySelector('[data-testid="stMain"]').scrollIntoView({
+                    behavior: 'smooth', block: 'center'
+                }), 100);
+                </script>
+            """
+            )
+
         st.markdown("---")
         st.subheader("🎯 Your Results")
-        
+
         results = st.session_state.results
-        recommendations = results.get("recommendations", [])
-        vton_result = results.get("vton_result", {})
-        
-        # Results in two columns
-        col1, col2 = st.columns([1, 1])
-        
-        # Show user analysis if available
-        user_analysis = results.get("user_analysis", {})
-        if user_analysis:
-            st.markdown("### 👤 Your Style Analysis")
-            analysis_cols = st.columns(3)
-            
-            with analysis_cols[0]:
-                if "dominant_colors" in user_analysis:
-                    st.write("**Your Color Palette:**")
-                    colors = user_analysis["dominant_colors"][:5]  # Top 5 colors
-                    color_html = '<div style="display: flex; flex-direction: row; gap: 5px;">'
-                    for color in colors:
-                        color_html += f'<div style="width: 25px; height: 25px; background-color: {color}; border-radius: 50%; border: 1px solid #ddd;"></div>'
-                    color_html += '</div>'
-                    st.markdown(color_html, unsafe_allow_html=True)
-            
-            with analysis_cols[1]:
-                if "body_shape" in user_analysis:
-                    st.write(f"**Body Type:** {user_analysis['body_shape'].title()}")
-            
-            with analysis_cols[2]:
-                if "season_compatibility" in user_analysis:
-                    st.write(f"**Season:** {user_analysis['season_compatibility'].title()}")
-            
+        left, right = st.columns([1, 1], gap="large")
+
+        # Style Analysis
+        analysis = results.get("user_analysis", {})
+        if analysis:
+            st.markdown("### 👤 Style Analysis")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                if "dominant_colors" in analysis:
+                    st.write("**Color Palette**")
+                    colors = analysis["dominant_colors"][:5]
+                    st.html(
+                        "<div style='display:flex;gap:6px;margin-top:6px;'>"
+                        + "".join(
+                            f"<div style='width:24px;height:24px;border-radius:50%;background:{c};border:1px solid #ddd;'></div>"
+                            for c in colors
+                        )
+                        + "</div>"
+                    )
+            with c2:
+                if "body_shape" in analysis:
+                    st.write(f"**Body Type:** {analysis['body_shape'].title()}")
+            with c3:
+                if "season_compatibility" in analysis:
+                    st.write(f"**Season:** {analysis['season_compatibility'].title()}")
             st.markdown("---")
-        
-        col1, col2 = st.columns([1, 1])
-        
-        with col1:
+
+        # Recommendations
+        with left:
             st.markdown("### 👔 Recommended Clothing")
-            
-            if recommendations:
-                for i, rec in enumerate(recommendations):
-                    with st.container():
-                        st.markdown("<div class='result-card'>", unsafe_allow_html=True)
-                        
-                        # Item info
-                        confidence = int(rec["confidence"] * 100)
-                        st.markdown(f"**{rec['type'].replace('_', ' ').title()}** - {confidence}% match")
-                        
-                        # Image
-                        st.image(rec["image"], use_container_width=True)
-                        
-                        # Metadata
-                        metadata = rec.get("metadata", {})
-                        st.markdown(f"**Brand:** {metadata.get('brand', 'Unknown')}")
-                        if metadata.get('price', 0) > 0:
-                            st.markdown(f"**Price:** ${metadata['price']:.2f}")
-                        
-                        # Show reasons if available
-                        reasons = metadata.get('reasons', [])
-                        if reasons:
-                            with st.expander("Why recommended?"):
-                                for reason in reasons[:3]:  # Show top 3 reasons
-                                    st.markdown(f"• {reason}")
-                        
-                        # Color info if available
-                        color = metadata.get('color', '')
-                        if color and color.startswith('#'):
-                            st.markdown(f"**Color:** <span style='color: {color}; font-weight: bold;'>{color}</span>", unsafe_allow_html=True)
-                        
-                        # Buy button
-                        product_link = metadata.get('product_link', '')
-                        if product_link:
-                            st.markdown(f"[🛒 Buy Now]({product_link})", unsafe_allow_html=True)
-                        
-                        st.markdown("</div>", unsafe_allow_html=True)
-            else:
-                st.info("No recommendations generated")
-        
-        with col2:
-            st.markdown("### 🪞 Virtual Try-On Result")
-            
-            if vton_result and vton_result.get("success"):
-                st.markdown("<div class='result-card'>", unsafe_allow_html=True)
-                
-                # Try to get the final image - handle different response formats
-                final_image_url = vton_result.get("final_image_url")
-                final_image_base64 = vton_result.get("final_image")
-                
-                image_displayed = False
-                
-                if final_image_url:
-                    st.image(final_image_url, caption="Your Virtual Try-On", use_container_width=True)
-                    image_displayed = True
-                elif final_image_base64:
-                    # Handle base64 image
-                    try:
-                        if final_image_base64.startswith("data:image"):
-                            final_image_base64 = final_image_base64.split(',')[1]
-                        st.image(io.BytesIO(base64.b64decode(final_image_base64)), 
-                                caption="Your Virtual Try-On", use_container_width=True)
-                        image_displayed = True
-                    except Exception as e:
-                        st.error(f"Error displaying try-on image: {e}")
-                
-                # Fallback: check for try_on_images array (legacy format)
-                if not image_displayed:
-                    try_on_images = vton_result.get("try_on_images", [])
-                    if try_on_images:
-                        for image_data in try_on_images[:1]:  # Show first image only
-                            image_url = image_data.get("image_url")
-                            image_data_b64 = image_data.get("image_data")
-                            
-                            if image_url:
-                                st.image(image_url, caption="Your Virtual Try-On", use_container_width=True)
-                                image_displayed = True
-                                break
-                            elif image_data_b64:
-                                try:
-                                    if image_data_b64.startswith("data:image"):
-                                        image_data_b64 = image_data_b64.split(',')[1]
-                                    st.image(io.BytesIO(base64.b64decode(image_data_b64)), 
-                                            caption="Your Virtual Try-On", use_container_width=True)
-                                    image_displayed = True
-                                    break
-                                except Exception as e:
-                                    st.error(f"Error displaying try-on image: {e}")
-                
-                if not image_displayed:
-                    st.info("Try-on image processing completed but image not available for display.")
-                
-                # Processing info
-                processing_time = vton_result.get("processing_time", 0)
-                st.markdown(f"**Processing Time:** {processing_time:.1f} seconds")
-                
-                # Show additional debug info if available
-                if vton_result.get("debug_info"):
-                    with st.expander("Processing Details"):
-                        debug_info = vton_result["debug_info"]
-                        if "correlation_id" in debug_info:
-                            st.write(f"**Correlation ID:** {debug_info['correlation_id']}")
-                        if "items_processed" in debug_info:
-                            st.write(f"**Items Processed:** {debug_info['items_processed']}")
-                        if "final_image_size" in debug_info:
-                            st.write(f"**Image Size:** {debug_info['final_image_size']} bytes")
-                
+            for rec in results.get("recommendations", []):
+                with st.container():
+                    st.markdown('<div class="result-card">', unsafe_allow_html=True)
+                    conf = int(rec.get("confidence", 0) * 100)
+                    st.markdown(f"**{rec['type'].replace('_',' ').title()}** – {conf}% match")
+                    st.image(rec["image"], use_container_width=True)
+                    meta = rec.get("metadata", {})
+                    st.caption(f"**Brand:** {meta.get('brand','Unknown')}")
+                    if meta.get("price", 0) > 0:
+                        st.caption(f"**Price:** ${meta['price']:.2f}")
+                    reasons = meta.get("reasons", [])
+                    if reasons:
+                        with st.expander("Why recommended?"):
+                            for r in reasons[:3]:
+                                st.write(f"• {r}")
+                    if link := meta.get("product_link"):
+                        st.link_button("🛒 Buy Now", link, use_container_width=True)
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+        # Try-on
+        with right:
+            st.markdown("### 🪞 Virtual Try-On")
+            vton = results.get("vton_result", {})
+            if vton and vton.get("success"):
+                st.markdown('<div class="result-card">', unsafe_allow_html=True)
+                img = vton.get("final_image_url") or vton.get("final_image")
+                if img:
+                    st.image(img, caption="Your Virtual Try-On", use_container_width=True)
+                else:
+                    st.info("Try-on ready but image not available")
+                st.caption(f"**Processing Time:** {vton.get('processing_time',0):.1f}s")
                 st.markdown("</div>", unsafe_allow_html=True)
-            elif vton_result and not vton_result.get("success"):
-                st.error(f"Virtual try-on failed: {vton_result.get('error', 'Unknown error')}")
-                if vton_result.get("message"):
-                    st.info(vton_result["message"])
             else:
-                st.info("Virtual try-on result not available")
-        
-        # Reset button
+                st.error(vton.get("error", "Virtual try-on failed"))
+
         st.markdown("---")
-        col1, col2, col3 = st.columns([1, 1, 1])
-        with col2:
+        _, c, _ = st.columns([1, 1, 1])
+        with c:
             if st.button("🔄 Start Over", type="secondary", use_container_width=True):
-                st.session_state.results = None
-                st.session_state.user_image = None
-                st.session_state.processing = False
+                for key in ("user_image", "results"):
+                    st.session_state[key] = None
                 st.rerun()
-    
-    def api_call(self, endpoint, data):
-        """Make API call to backend"""
+
+    # ---------- API ----------
+    def api_call(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{self.api_base_url}{endpoint}"
-        
         try:
-            response = requests.post(
+            r = requests.post(
                 url,
                 json=data,
                 headers={"Content-Type": "application/json"},
-                timeout=400  # 400 seconds timeout as requested
+                timeout=400,
             )
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                error_msg = f"API Error ({response.status_code})"
-                try:
-                    error_detail = response.json().get("detail", response.text)
-                    error_msg += f": {error_detail}"
-                except Exception:
-                    error_msg += f": {response.text}"
-                raise Exception(error_msg)
-        
+            if r.status_code == 200:
+                return r.json()
+            try:
+                detail = r.json().get("detail", r.text)
+            except Exception:
+                detail = r.text
+            raise Exception(f"{r.status_code}: {detail}")
         except requests.Timeout:
-            raise Exception("Request timed out. Please try again.")
+            raise Exception("Request timed out")
         except requests.ConnectionError:
-            raise Exception("Could not connect to API. Please check if the backend is running.")
-        except Exception as e:
-            raise Exception(f"API Error: {str(e)}")
+            raise Exception("Backend unreachable – is it running?")
 
-if __name__ == "__main__":
-    # Sidebar info
-    st.sidebar.title("AI Fashion Studio")
-    st.sidebar.info("Simple workflow: Upload → Set preferences → Get results!")
-    st.sidebar.markdown("---")
-    st.sidebar.caption("v3.0 - Simplified")
-    
-    # API status check
+
+# ---------- Sidebar ----------
+with st.sidebar:
+    st.title("AI Fashion Studio")
+    st.info("1️⃣ Upload photo\n2️⃣ Set preferences\n3️⃣ Get results")
+    st.markdown("---")
+    st.caption("v3.1 – UI refresh")
+
     try:
         app = SimpleVTONApp()
-        response = requests.get(f"{app.api_base_url}/health", timeout=3)
-        if response.status_code == 200:
-            st.sidebar.success("✅ Backend Connected")
-        else:
-            st.sidebar.warning("⚠️ Backend Issues")
+        ok = requests.get(f"{app.api_base_url}/health", timeout=3).ok
+        st.success("✅ Backend Connected") if ok else st.warning("⚠️ Backend Issues")
     except Exception:
-        st.sidebar.error("❌ Backend Offline")
-    
-    # Run app
+        st.error("❌ Backend Offline")
+
+# ---------- Main ----------
+if __name__ == "__main__":
     try:
-        app = SimpleVTONApp()
-        app.run()
-    except Exception as e:
-        st.error(f"Application error: {e}")
+        SimpleVTONApp().run()
+    except Exception as ex:
+        st.error(f"Application error: {ex}")
