@@ -391,20 +391,13 @@ class SimpleVTONApp:
 
 
 if __name__ == "__main__":
-    st.sidebar.title("AI Fashion Studio")
-    st.sidebar.info("Simple workflow: Upload → Set preferences → Get results!")
-    st.sidebar.markdown("---")
-    st.sidebar.caption("v3.1 – UI refresh")
+    # Sidebar – no logs, no doc dumps
+    with st.sidebar:
+        st.title("AI Fashion Studio")
+        st.info("1️⃣ Upload photo\n2️⃣ Set preferences\n3️⃣ Get results")
 
+    # Run app
     try:
-        app = SimpleVTONApp()
-        ok = requests.get(f"{app.api_base_url}/health", timeout=3).ok
-        st.success("✅ Backend Connected") if ok else st.warning("⚠️ Backend Issues")
-    except Exception:
-        st.error("❌ Backend Offline")
-
-    try:
-        app = SimpleVTONApp()
-        app.run()
+        SimpleVTONApp().run()
     except Exception as e:
         st.error(f"Application error: {e}")
