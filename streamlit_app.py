@@ -390,14 +390,22 @@ class SimpleVTONApp:
             raise Exception(f"API Error: {str(e)}")
 
 
-if __name__ == "__main__":
-    # Sidebar – no logs, no doc dumps
-    with st.sidebar:
-        st.title("AI Fashion Studio")
-        st.info("1️⃣ Upload photo\n2️⃣ Set preferences\n3️⃣ Get results")
+# ---------- Sidebar ----------
+with st.sidebar:
+    st.title("AI Fashion Studio")
+    st.info("1️⃣ Upload photo\n2️⃣ Set preferences\n3️⃣ Get results")
+    st.markdown("---")
 
-    # Run app
     try:
-        SimpleVTONApp().run()
-    except Exception as e:
-        st.error(f"Application error: {e}")
+        app = SimpleVTONApp()
+        r = requests.get(f"{app.api_base_url}/health", timeout=2)
+        if r.status_code == 200:
+            st.success("✅ Backend Connected")
+        else:
+            st.warning("⚠️ Backend Issues")
+    except Exception:
+        st.error("❌ Backend Offline")
+
+# ---------- Run ----------
+if __name__ == "__main__":
+    SimpleVTONApp().run()    
